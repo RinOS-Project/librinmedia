@@ -62,6 +62,16 @@ struct AudioDecoder::Impl {
     AudioOutputFormat output;
     AudioMetadata information;
     std::string error;
+    RinRuntimeCancellationFunction cancellation = nullptr;
+    void* cancellationContext = nullptr;
+    bool cancelled = false;
+
+    bool pollCancellation() {
+        if (!cancellation || cancellation(cancellationContext) == 0) return false;
+        cancelled = true;
+        setError("メディアデコードがキャンセルされました");
+        return true;
+    }
 
     bool ensurePendingCapacity(size_t samples) {
         if (samples == 0 || samples > kMaxPendingSamples) return false;
@@ -84,9 +94,11 @@ struct AudioDecoder::Impl {
         ssize_t count;
         if (!self || self->file < 0 || !buffer || size <= 0)
             return AVERROR(EINVAL);
+        if (self->pollCancellation()) return AVERROR_EXIT;
         do {
             count = read(self->file, buffer, static_cast<size_t>(size));
         } while (count < 0 && errno == EINTR);
+        if (self->pollCancellation()) return AVERROR_EXIT;
         if (count == 0) return AVERROR_EOF;
         if (count > 0) {
             uint64_t readSize = static_cast<uint64_t>(count);
@@ -102,6 +114,7 @@ struct AudioDecoder::Impl {
     static int64_t seekPacket(void* opaque, int64_t offset, int whence) {
         Impl* self = static_cast<Impl*>(opaque);
         if (!self || self->file < 0) return AVERROR(EINVAL);
+        if (self->pollCancellation()) return AVERROR_EXIT;
         if (whence == AVSEEK_SIZE) {
             off_t current = lseek(self->file, 0, SEEK_CUR);
             off_t end = current < 0 ? -1 : lseek(self->file, 0, SEEK_END);
@@ -143,7 +156,8 @@ struct AudioDecoder::Impl {
         AVChannelLayout outputLayout = {};
         SwrContext* replacement = nullptr;
         int result;
-        if (!codec || !audioOutputFormatValid(requested)) return false;
+        if (!codec || !audioOutputFormatValid(requested) || pollCancellation())
+            return false;
         av_channel_layout_default(&outputLayout, static_cast<int>(requested.channels));
         result = swr_alloc_set_opts2(&replacement,
                                      &outputLayout, AV_SAMPLE_FMT_S16,
@@ -164,6 +178,7 @@ struct AudioDecoder::Impl {
     }
 
     int convertFrame() {
+        if (pollCancellation()) return -1;
         int inputRate = codec->sample_rate > 0 ? codec->sample_rate : 48000;
         if (frame->nb_samples <= 0 || frame->nb_samples > kMaxFrameSamples) {
             setError("音声フレームのサイズが上限を超えています");
@@ -214,11 +229,16 @@ struct AudioDecoder::Impl {
         pendingSamples = static_cast<size_t>(frames) *
                          static_cast<size_t>(output.channels);
         pendingOffset = 0;
+        if (pollCancellation()) {
+            clearPending();
+            return -1;
+        }
         return frames;
     }
 
     int decodeNextFrame() {
         for (;;) {
+            if (pollCancellation()) return -1;
             int result = avcodec_receive_frame(codec, frame);
             if (result == 0) return convertFrame();
             if (result == AVERROR_EOF) return 0;
@@ -229,7 +249,9 @@ struct AudioDecoder::Impl {
 
             bool submitted = false;
             while (!submitted) {
+                if (pollCancellation()) return -1;
                 result = av_read_frame(format, packet);
+                if (cancelled) return -1;
                 if (result < 0) {
                     if (!draining) {
                         draining = true;
@@ -283,6 +305,7 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
     close();
     if (!implementation) return false;
     Impl& state = *implementation;
+    state.cancelled = false;
     state.error.clear();
     if (descriptor < 0 || !audioOutputFormatValid(output)) {
         if (descriptor >= 0) (void)::close(descriptor);
@@ -290,6 +313,10 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
             state.setError("出力音声形式が未対応です");
         else
             state.setError("ファイルを開けません");
+        return false;
+    }
+    if (state.pollCancellation()) {
+        (void)::close(descriptor);
         return false;
     }
     state.file = descriptor;
@@ -320,12 +347,20 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
     state.format->max_analyze_duration = kMaxAnalyzeDurationUs;
     state.format->max_streams = kMaxStreams;
     int result = avformat_open_input(&state.format, nullptr, nullptr, nullptr);
+    if (state.cancelled) {
+        close();
+        return false;
+    }
     if (result < 0) {
         state.setError("未対応または破損した音声ファイルです", result);
         close();
         return false;
     }
     result = avformat_find_stream_info(state.format, nullptr);
+    if (state.cancelled) {
+        close();
+        return false;
+    }
     if (result < 0) {
         state.setError("音声情報を読み取れません", result);
         close();
@@ -359,6 +394,10 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
         state.codec, state.format->streams[state.streamIndex]->codecpar);
     if (result < 0 || (result = avcodec_open2(state.codec, decoder, nullptr)) < 0) {
         state.setError("音声デコーダーを開始できません", result);
+        close();
+        return false;
+    }
+    if (state.pollCancellation()) {
         close();
         return false;
     }
@@ -400,6 +439,10 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
         close();
         return false;
     }
+    if (state.pollCancellation()) {
+        close();
+        return false;
+    }
     state.information.title = formatTitle.empty() ? streamTitle : formatTitle;
     state.information.artist = formatArtist.empty() ? streamArtist : formatArtist;
     state.information.album = formatAlbum.empty() ? streamAlbum : formatAlbum;
@@ -420,6 +463,10 @@ int AudioDecoder::readFrames(Sample* destination, int maximumFrames) {
     Impl& state = *implementation;
     int produced = 0;
     while (produced < maximumFrames) {
+        if (state.pollCancellation()) {
+            state.clearPending();
+            return -1;
+        }
         if (state.pendingOffset < state.pendingSamples) {
             size_t pendingFrames = (state.pendingSamples - state.pendingOffset) /
                                    static_cast<size_t>(state.output.channels);
@@ -434,6 +481,7 @@ int AudioDecoder::readFrames(Sample* destination, int maximumFrames) {
             continue;
         }
         int result = state.decodeNextFrame();
+        if (state.cancelled) return -1;
         if (result < 0) return produced ? produced : -1;
         if (result == 0) break;
     }
@@ -444,10 +492,19 @@ bool AudioDecoder::setOutputFormat(const AudioOutputFormat& output) {
     if (!implementation || !implementation->codec || !audioOutputFormatValid(output))
         return false;
     Impl& state = *implementation;
+    if (state.pollCancellation()) return false;
     if (state.output.sampleRate == output.sampleRate &&
         state.output.channels == output.channels)
         return true;
     return state.initializeResampler(output);
+}
+
+void AudioDecoder::setCancellation(
+    RinRuntimeCancellationFunction cancellation, void* cancellation_context) {
+    if (!implementation) return;
+    implementation->cancellation = cancellation;
+    implementation->cancellationContext = cancellation_context;
+    implementation->cancelled = false;
 }
 
 AudioOutputFormat AudioDecoder::outputFormat() const {
@@ -457,9 +514,11 @@ AudioOutputFormat AudioDecoder::outputFormat() const {
 bool AudioDecoder::seek(Milliseconds positionMs) {
     if (!implementation || !implementation->format || positionMs < 0) return false;
     Impl& state = *implementation;
+    if (state.pollCancellation()) return false;
     AVStream* stream = state.format->streams[state.streamIndex];
     int64_t timestamp = av_rescale_q(positionMs, AVRational{1, 1000}, stream->time_base);
     int result = av_seek_frame(state.format, state.streamIndex, timestamp, AVSEEK_FLAG_BACKWARD);
+    if (state.cancelled) return false;
     if (result < 0) {
         state.setError("指定位置へ移動できません", result);
         return false;
@@ -506,6 +565,10 @@ const AudioMetadata& AudioDecoder::metadata() const {
 const std::string& AudioDecoder::lastError() const {
     static const std::string empty;
     return implementation ? implementation->error : empty;
+}
+
+bool AudioDecoder::wasCancelled() const {
+    return implementation && implementation->cancelled;
 }
 
 } // namespace RinMedia

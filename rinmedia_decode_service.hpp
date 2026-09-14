@@ -98,10 +98,14 @@ class AudioDecoderClient final {
     AudioOutputFormat output_format_;
     AudioMetadata metadata_;
     std::string error_;
+    RinRuntimeCancellationFunction cancellation_ = nullptr;
+    void* cancellation_context_ = nullptr;
+    bool cancelled_ = false;
 
     void reset();
     bool call(MediaDecodeOperation operation, const void* request,
-              uint32_t request_bytes, MediaDecodeHeaderV1* reply);
+              uint32_t request_bytes, MediaDecodeHeaderV1* reply,
+              bool honor_cancellation = true);
 
 public:
     AudioDecoderClient() = default;
@@ -114,6 +118,10 @@ public:
      * result and cannot be retained by the application after this call. */
     bool openDescriptor(int descriptor);
     bool openDescriptor(int descriptor, const AudioOutputFormat& output);
+    /* The callback is caller-owned and is sampled before each bounded socket
+     * wait.  It may be null; cancellation never becomes a protocol success. */
+    void setCancellation(RinRuntimeCancellationFunction cancellation,
+                         void* cancellation_context);
     bool setOutputFormat(const AudioOutputFormat& output);
     int readFrames(Sample* destination, int maximumFrames);
     bool seek(Milliseconds positionMs);
@@ -122,6 +130,7 @@ public:
     AudioOutputFormat outputFormat() const { return output_format_; }
     const AudioMetadata& metadata() const { return metadata_; }
     const std::string& lastError() const { return error_; }
+    bool wasCancelled() const { return cancelled_; }
 };
 
 } // namespace RinMedia

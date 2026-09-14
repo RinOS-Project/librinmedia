@@ -5,6 +5,7 @@
 #include "../libc/stdint.h"
 #include "../libc/stddef.h"
 #include "../libcxx/string.h"
+#include <rinruntime/cancellation.h>
 
 namespace RinMedia {
 
@@ -55,6 +56,10 @@ public:
     /* Takes ownership of a File Portal descriptor. */
     bool openDescriptor(int descriptor);
     bool openDescriptor(int descriptor, const AudioOutputFormat& output);
+    /* The callback is caller-owned and is sampled at admission, source
+     * reads, codec boundaries, and bounded output loops.  It may be null. */
+    void setCancellation(RinRuntimeCancellationFunction cancellation,
+                         void* cancellation_context);
     bool setOutputFormat(const AudioOutputFormat& output);
     int readFrames(Sample* destination, int maximumFrames);
     bool seek(Milliseconds positionMs);
@@ -63,6 +68,7 @@ public:
     AudioOutputFormat outputFormat() const;
     const AudioMetadata& metadata() const;
     const std::string& lastError() const;
+    bool wasCancelled() const;
 };
 
 } // namespace RinMedia
