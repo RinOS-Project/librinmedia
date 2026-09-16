@@ -209,26 +209,73 @@ typedef struct {
  * ユーティリティ
  * ═══════════════════════════════════════════════════════════════*/
 
+static inline int ravi_range_valid(const RAviContext* ctx, size_t offset,
+                                   size_t length) {
+    return ctx != 0 && offset <= ctx->size && length <= ctx->size - offset;
+}
+
+static inline uint16_t ravi_load16(const uint8_t* data) {
+    return (uint16_t)data[0] | (uint16_t)((uint16_t)data[1] << 8);
+}
+
+static inline uint32_t ravi_load32(const uint8_t* data) {
+    return (uint32_t)data[0] |
+           ((uint32_t)data[1] << 8) |
+           ((uint32_t)data[2] << 16) |
+           ((uint32_t)data[3] << 24);
+}
+
+static inline int ravi_read_chunk_header(RAviContext* ctx,
+                                         uint32_t* fourcc_out,
+                                         uint32_t* size_out,
+                                         size_t* end_out) {
+    uint32_t chunk_size;
+    if (ctx == 0 || fourcc_out == 0 || size_out == 0 || end_out == 0 ||
+        !ravi_range_valid(ctx, ctx->pos, sizeof(RAviChunk))) return 0;
+    *fourcc_out = ravi_load32(ctx->data + ctx->pos);
+    chunk_size = ravi_load32(ctx->data + ctx->pos + 4u);
+    ctx->pos += sizeof(RAviChunk);
+    if (!ravi_range_valid(ctx, ctx->pos, (size_t)chunk_size)) return 0;
+    *size_out = chunk_size;
+    *end_out = ctx->pos + (size_t)chunk_size;
+    return 1;
+}
+
+static inline int ravi_finish_chunk(RAviContext* ctx, size_t chunk_end,
+                                    size_t parent_end, uint32_t chunk_size) {
+    if (ctx == 0 || chunk_end > parent_end ||
+        !ravi_range_valid(ctx, chunk_end, 0u)) return 0;
+    if ((chunk_size & 1u) != 0u) {
+        if (chunk_end >= parent_end || !ravi_range_valid(ctx, chunk_end, 1u))
+            return 0;
+        ++chunk_end;
+    }
+    ctx->pos = chunk_end;
+    return 1;
+}
+
 static inline uint32_t ravi_read32(RAviContext* ctx) {
-    if (ctx->pos + 4 > ctx->size) return 0;
-    uint32_t val = ctx->data[ctx->pos] |
-                   (ctx->data[ctx->pos + 1] << 8) |
-                   (ctx->data[ctx->pos + 2] << 16) |
-                   (ctx->data[ctx->pos + 3] << 24);
+    uint32_t val;
+    if (!ravi_range_valid(ctx, ctx->pos, 4u)) return 0;
+    val = ravi_load32(ctx->data + ctx->pos);
     ctx->pos += 4;
     return val;
 }
 
 static inline uint16_t ravi_read16(RAviContext* ctx) {
-    if (ctx->pos + 2 > ctx->size) return 0;
-    uint16_t val = ctx->data[ctx->pos] | (ctx->data[ctx->pos + 1] << 8);
+    uint16_t val;
+    if (!ravi_range_valid(ctx, ctx->pos, 2u)) return 0;
+    val = ravi_load16(ctx->data + ctx->pos);
     ctx->pos += 2;
     return val;
 }
 
 static inline void ravi_skip(RAviContext* ctx, size_t n) {
+    if (ctx == 0 || !ravi_range_valid(ctx, ctx->pos, n)) {
+        if (ctx != 0) ctx->pos = ctx->size;
+        return;
+    }
     ctx->pos += n;
-    if (ctx->pos > ctx->size) ctx->pos = ctx->size;
 }
 
 static inline int ravi_is_video_chunk(uint32_t fourcc) {
@@ -259,26 +306,30 @@ static inline int ravi_get_stream_index(uint32_t fourcc) {
  * ═══════════════════════════════════════════════════════════════*/
 
 static inline int ravi_parse_stream_header(RAviContext* ctx, size_t end_pos) {
+    if (ctx == 0 || end_pos > ctx->size || ctx->pos > end_pos)
+        return RAVI_DATA_ERROR;
     if (ctx->stream_count >= RAVI_MAX_STREAMS) return RAVI_ERROR;
 
     RAviStream* stream = &ctx->streams[ctx->stream_count];
     stream->stream_index = ctx->stream_count;
 
     while (ctx->pos < end_pos) {
-        uint32_t fourcc = ravi_read32(ctx);
-        uint32_t chunk_size = ravi_read32(ctx);
-        size_t chunk_end = ctx->pos + chunk_size;
+        uint32_t fourcc;
+        uint32_t chunk_size;
+        size_t chunk_end;
+        if (!ravi_read_chunk_header(ctx, &fourcc, &chunk_size, &chunk_end) ||
+            chunk_end > end_pos) return RAVI_DATA_ERROR;
 
         if (fourcc == RAVI_STRH) {
             /* ストリームヘッダー */
             RAviStreamHeader hdr;
             if (chunk_size >= sizeof(RAviStreamHeader)) {
                 const uint8_t* p = ctx->data + ctx->pos;
-                hdr.type = *(uint32_t*)(p + 0);
-                hdr.handler = *(uint32_t*)(p + 4);
-                hdr.scale = *(uint32_t*)(p + 20);
-                hdr.rate = *(uint32_t*)(p + 24);
-                hdr.length = *(uint32_t*)(p + 32);
+                hdr.type = ravi_load32(p + 0u);
+                hdr.handler = ravi_load32(p + 4u);
+                hdr.scale = ravi_load32(p + 20u);
+                hdr.rate = ravi_load32(p + 24u);
+                hdr.length = ravi_load32(p + 32u);
 
                 stream->scale = hdr.scale;
                 stream->rate = hdr.rate;
@@ -305,64 +356,77 @@ static inline int ravi_parse_stream_header(RAviContext* ctx, size_t end_pos) {
             if (stream->type == 0) {
                 /* ビデオフォーマット */
                 if (chunk_size >= sizeof(RAviVideoFormat)) {
-                    RAviVideoFormat* fmt = (RAviVideoFormat*)(ctx->data + ctx->pos);
-                    stream->video.width = fmt->width;
-                    stream->video.height = fmt->height > 0 ? fmt->height : -fmt->height;
-                    stream->video.bit_depth = fmt->bit_count;
+                    const uint8_t* p = ctx->data + ctx->pos;
+                    int32_t width = (int32_t)ravi_load32(p + 4u);
+                    int32_t height = (int32_t)ravi_load32(p + 8u);
+                    if (height == (int32_t)0x80000000) return RAVI_DATA_ERROR;
+                    stream->video.width = width;
+                    stream->video.height = height > 0 ? height : -height;
+                    stream->video.bit_depth = (int)ravi_load16(p + 14u);
                     if (stream->video.codec == 0) {
-                        stream->video.codec = fmt->compression;
+                        stream->video.codec = ravi_load32(p + 16u);
                     }
                 }
             } else if (stream->type == 1) {
                 /* オーディオフォーマット */
                 if (chunk_size >= sizeof(RAviAudioFormat)) {
-                    RAviAudioFormat* fmt = (RAviAudioFormat*)(ctx->data + ctx->pos);
-                    stream->audio.format = fmt->format_tag;
-                    stream->audio.channels = fmt->channels;
-                    stream->audio.sample_rate = fmt->samples_per_sec;
-                    stream->audio.bits_per_sample = fmt->bits_per_sample;
+                    const uint8_t* p = ctx->data + ctx->pos;
+                    stream->audio.format = ravi_load16(p + 0u);
+                    stream->audio.channels = (int)ravi_load16(p + 2u);
+                    stream->audio.sample_rate = (int)ravi_load32(p + 4u);
+                    stream->audio.bits_per_sample = (int)ravi_load16(p + 14u);
                 }
             }
         }
 
-        ctx->pos = chunk_end;
-        if (chunk_size & 1) ctx->pos++;  /* パディング */
+        if (!ravi_finish_chunk(ctx, chunk_end, end_pos, chunk_size))
+            return RAVI_DATA_ERROR;
     }
 
+    if (ctx->pos != end_pos) return RAVI_DATA_ERROR;
     ctx->stream_count++;
     return RAVI_OK;
 }
 
 static inline int ravi_parse_header_list(RAviContext* ctx, size_t end_pos) {
+    if (ctx == 0 || end_pos > ctx->size || ctx->pos > end_pos)
+        return RAVI_DATA_ERROR;
     while (ctx->pos < end_pos) {
-        uint32_t fourcc = ravi_read32(ctx);
-        uint32_t chunk_size = ravi_read32(ctx);
-        size_t chunk_end = ctx->pos + chunk_size;
+        uint32_t fourcc;
+        uint32_t chunk_size;
+        size_t chunk_end;
+        if (!ravi_read_chunk_header(ctx, &fourcc, &chunk_size, &chunk_end) ||
+            chunk_end > end_pos) return RAVI_DATA_ERROR;
 
         if (fourcc == RAVI_AVIH) {
             /* メインヘッダー */
             if (chunk_size >= sizeof(RAviMainHeader)) {
-                RAviMainHeader* hdr = (RAviMainHeader*)(ctx->data + ctx->pos);
-                ctx->width = hdr->width;
-                ctx->height = hdr->height;
-                ctx->total_frames = hdr->total_frames;
-                if (hdr->micro_sec_per_frame > 0) {
-                    ctx->fps = 1000000.0f / (float)hdr->micro_sec_per_frame;
-                    ctx->duration_ms = (uint32_t)((uint64_t)hdr->total_frames *
-                                       hdr->micro_sec_per_frame / 1000);
+                const uint8_t* p = ctx->data + ctx->pos;
+                uint32_t microseconds = ravi_load32(p + 0u);
+                uint32_t total_frames = ravi_load32(p + 16u);
+                ctx->width = (int)ravi_load32(p + 32u);
+                ctx->height = (int)ravi_load32(p + 36u);
+                ctx->total_frames = total_frames;
+                if (microseconds > 0u) {
+                    ctx->fps = 1000000.0f / (float)microseconds;
+                    ctx->duration_ms = (uint32_t)((uint64_t)total_frames *
+                                       microseconds / 1000u);
                 }
             }
         } else if (fourcc == RAVI_LIST) {
-            uint32_t list_type = ravi_read32(ctx);
+            uint32_t list_type;
+            if (chunk_size < 4u) return RAVI_DATA_ERROR;
+            list_type = ravi_read32(ctx);
             if (list_type == RAVI_STRL) {
-                ravi_parse_stream_header(ctx, chunk_end);
+                int result = ravi_parse_stream_header(ctx, chunk_end);
+                if (result != RAVI_OK) return result;
             }
         }
 
-        ctx->pos = chunk_end;
-        if (chunk_size & 1) ctx->pos++;
+        if (!ravi_finish_chunk(ctx, chunk_end, end_pos, chunk_size))
+            return RAVI_DATA_ERROR;
     }
-    return RAVI_OK;
+    return ctx->pos == end_pos ? RAVI_OK : RAVI_DATA_ERROR;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -373,50 +437,67 @@ static inline int ravi_parse_header_list(RAviContext* ctx, size_t end_pos) {
  * AVIファイルを開く
  */
 static inline int ravi_open(RAviContext* ctx, const uint8_t* data, size_t size) {
-    if (!ctx || !data || size < 12) return RAVI_ERROR;
+    uint32_t riff;
+    uint32_t file_size;
+    uint32_t avi;
+    size_t riff_end;
+    if (!ctx) return RAVI_ERROR;
 
     /* 初期化 */
     for (size_t i = 0; i < sizeof(RAviContext); i++) {
         ((uint8_t*)ctx)[i] = 0;
     }
+    if (!data || size < 12u) return RAVI_ERROR;
     ctx->data = data;
     ctx->size = size;
     ctx->video_stream = -1;
     ctx->audio_stream = -1;
 
     /* RIFFヘッダー確認 */
-    uint32_t riff = ravi_read32(ctx);
-    uint32_t file_size = ravi_read32(ctx);
-    uint32_t avi = ravi_read32(ctx);
-    (void)file_size;
+    riff = ravi_read32(ctx);
+    file_size = ravi_read32(ctx);
+    avi = ravi_read32(ctx);
 
-    if (riff != RAVI_RIFF || avi != RAVI_AVI) {
+    if (riff != RAVI_RIFF || avi != RAVI_AVI || file_size < 4u ||
+        (size_t)file_size > size - 8u) {
         return RAVI_DATA_ERROR;
     }
+    riff_end = 8u + (size_t)file_size;
+    ctx->size = riff_end;
 
     /* チャンク解析 */
     while (ctx->pos < ctx->size) {
-        uint32_t fourcc = ravi_read32(ctx);
-        uint32_t chunk_size = ravi_read32(ctx);
-        size_t chunk_end = ctx->pos + chunk_size;
+        uint32_t fourcc;
+        uint32_t chunk_size;
+        size_t chunk_end;
+        if (!ravi_read_chunk_header(ctx, &fourcc, &chunk_size, &chunk_end))
+            return RAVI_DATA_ERROR;
 
         if (fourcc == RAVI_LIST) {
-            uint32_t list_type = ravi_read32(ctx);
+            uint32_t list_type;
+            if (chunk_size < 4u) return RAVI_DATA_ERROR;
+            list_type = ravi_read32(ctx);
 
             if (list_type == RAVI_HDRL) {
-                ravi_parse_header_list(ctx, chunk_end);
+                int result = ravi_parse_header_list(ctx, chunk_end);
+                if (result != RAVI_OK) return result;
             } else if (list_type == RAVI_MOVI) {
+                if (ctx->movi_offset != 0u) return RAVI_DATA_ERROR;
                 ctx->movi_offset = ctx->pos;
-                ctx->movi_size = chunk_size - 4;
+                ctx->movi_size = (size_t)chunk_size - 4u;
             }
         } else if (fourcc == RAVI_IDX1) {
+            if (ctx->idx1_offset != 0u ||
+                chunk_size % sizeof(RAviIndexEntry) != 0u)
+                return RAVI_DATA_ERROR;
             ctx->idx1_offset = ctx->pos;
-            ctx->idx1_count = chunk_size / sizeof(RAviIndexEntry);
+            ctx->idx1_count = (size_t)chunk_size / sizeof(RAviIndexEntry);
         }
 
-        ctx->pos = chunk_end;
-        if (chunk_size & 1) ctx->pos++;
+        if (!ravi_finish_chunk(ctx, chunk_end, ctx->size, chunk_size))
+            return RAVI_DATA_ERROR;
     }
+    if (ctx->pos != ctx->size) return RAVI_DATA_ERROR;
 
     /* ビデオストリームから情報を更新 */
     if (ctx->video_stream >= 0) {
@@ -465,23 +546,62 @@ static inline uint32_t ravi_get_video_codec(RAviContext* ctx) {
     return ctx->streams[ctx->video_stream].video.codec;
 }
 
+static inline void ravi_clear_frame(RAviFrame* frame) {
+    if (frame == 0) return;
+    for (size_t i = 0u; i < sizeof(*frame); ++i)
+        ((uint8_t*)frame)[i] = 0u;
+}
+
+static inline int ravi_index_range(const RAviContext* ctx,
+                                   const uint8_t** entry_out) {
+    if (ctx == 0 || entry_out == 0 || ctx->idx1_offset > ctx->size ||
+        ctx->idx1_count >
+            (ctx->size - ctx->idx1_offset) / sizeof(RAviIndexEntry)) return 0;
+    *entry_out = ctx->data + ctx->idx1_offset;
+    return 1;
+}
+
+static inline int ravi_frame_payload(const RAviContext* ctx,
+                                     uint32_t offset, uint32_t size,
+                                     const uint8_t** data_out) {
+    size_t payload_offset;
+    if (ctx == 0 || data_out == 0 || ctx->movi_offset > ctx->size ||
+        (size_t)offset > ctx->movi_size ||
+        ctx->movi_size - (size_t)offset < 8u ||
+        (size_t)size > ctx->movi_size - (size_t)offset - 8u)
+        return 0;
+    payload_offset = ctx->movi_offset + (size_t)offset + 8u;
+    if (!ravi_range_valid(ctx, payload_offset, size)) return 0;
+    *data_out = ctx->data + payload_offset;
+    return 1;
+}
+
 /*
  * インデックスを使ってフレームを取得
  */
 static inline int ravi_get_frame_by_index(RAviContext* ctx, uint32_t frame_num,
                                            RAviFrame* frame) {
-    if (!ctx || !frame || ctx->idx1_offset == 0) return RAVI_ERROR;
-
-    const RAviIndexEntry* idx = (const RAviIndexEntry*)(ctx->data + ctx->idx1_offset);
+    const uint8_t* index_data = 0;
+    ravi_clear_frame(frame);
+    if (!ctx || !frame || ctx->idx1_offset == 0 ||
+        !ravi_index_range(ctx, &index_data)) return RAVI_ERROR;
     uint32_t video_frame = 0;
 
     for (size_t i = 0; i < ctx->idx1_count; i++) {
-        if (ravi_is_video_chunk(idx[i].chunk_id)) {
+        const uint8_t* entry = index_data + i * sizeof(RAviIndexEntry);
+        uint32_t chunk_id = ravi_load32(entry + 0u);
+        uint32_t flags = ravi_load32(entry + 4u);
+        uint32_t offset = ravi_load32(entry + 8u);
+        uint32_t size = ravi_load32(entry + 12u);
+        const uint8_t* payload = 0;
+        if (ravi_is_video_chunk(chunk_id)) {
             if (video_frame == frame_num) {
-                frame->data = ctx->data + ctx->movi_offset + idx[i].offset + 8;
-                frame->size = idx[i].size;
-                frame->stream_index = ravi_get_stream_index(idx[i].chunk_id);
-                frame->is_keyframe = (idx[i].flags & 0x10) != 0;
+                if (!ravi_frame_payload(ctx, offset, size, &payload))
+                    return RAVI_DATA_ERROR;
+                frame->data = payload;
+                frame->size = size;
+                frame->stream_index = ravi_get_stream_index(chunk_id);
+                frame->is_keyframe = (flags & 0x10u) != 0u;
                 frame->frame_number = frame_num;
                 return RAVI_OK;
             }
@@ -508,17 +628,25 @@ static inline int ravi_read_next_video_frame(RAviContext* ctx, RAviFrame* frame)
  */
 static inline int ravi_get_audio_chunk(RAviContext* ctx, uint32_t chunk_num,
                                         RAviFrame* frame) {
-    if (!ctx || !frame || ctx->idx1_offset == 0) return RAVI_ERROR;
-
-    const RAviIndexEntry* idx = (const RAviIndexEntry*)(ctx->data + ctx->idx1_offset);
+    const uint8_t* index_data = 0;
+    ravi_clear_frame(frame);
+    if (!ctx || !frame || ctx->idx1_offset == 0 ||
+        !ravi_index_range(ctx, &index_data)) return RAVI_ERROR;
     uint32_t audio_chunk = 0;
 
     for (size_t i = 0; i < ctx->idx1_count; i++) {
-        if (ravi_is_audio_chunk(idx[i].chunk_id)) {
+        const uint8_t* entry = index_data + i * sizeof(RAviIndexEntry);
+        uint32_t chunk_id = ravi_load32(entry + 0u);
+        uint32_t offset = ravi_load32(entry + 8u);
+        uint32_t size = ravi_load32(entry + 12u);
+        const uint8_t* payload = 0;
+        if (ravi_is_audio_chunk(chunk_id)) {
             if (audio_chunk == chunk_num) {
-                frame->data = ctx->data + ctx->movi_offset + idx[i].offset + 8;
-                frame->size = idx[i].size;
-                frame->stream_index = ravi_get_stream_index(idx[i].chunk_id);
+                if (!ravi_frame_payload(ctx, offset, size, &payload))
+                    return RAVI_DATA_ERROR;
+                frame->data = payload;
+                frame->size = size;
+                frame->stream_index = ravi_get_stream_index(chunk_id);
                 frame->is_keyframe = 1;
                 frame->frame_number = chunk_num;
                 return RAVI_OK;
