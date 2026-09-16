@@ -183,6 +183,7 @@ int rin_media_capability_find(const char* name, size_t name_bytes,
                               uint32_t* codec_id)
 {
     size_t index;
+    if (codec_id != NULL) *codec_id = 0u;
     if (name == NULL || codec_id == NULL || name_bytes == 0u ||
         name_bytes >= RIN_MEDIA_CAPABILITY_NAME_MAX) return -1;
     for (index = 0u; index < sizeof(kCapabilities) / sizeof(kCapabilities[0]); ++index) {
@@ -206,7 +207,9 @@ int rin_media_container_probe(const uint8_t* data, size_t source_bytes,
         return -1;
     if (source_bytes >= 12u && fourcc(data, 'R', 'I', 'F', 'F')) {
         /* RIFF size includes the form type and all bytes following it. */
-        if ((uint64_t)read_le32(data + 4u) + 8u > (uint64_t)source_bytes)
+        uint32_t riff_size = read_le32(data + 4u);
+        if (riff_size < 4u ||
+            (uint64_t)riff_size > (uint64_t)(source_bytes - 8u))
             return -1;
         if (fourcc(data + 8u, 'A', 'V', 'I', ' ')) {
             *container_id = RIN_MEDIA_CONTAINER_AVI;
