@@ -212,16 +212,26 @@ static inline int rvid_decode_raw_frame(const uint8_t* data, size_t size,
  * 公開API
  * ═══════════════════════════════════════════════════════════════*/
 
+static inline void rvid_clear_player(RVidPlayer* player)
+{
+    if (!player) return;
+    for (size_t i = 0u; i < sizeof(*player); ++i)
+        ((uint8_t*)player)[i] = 0u;
+}
+
+static inline int rvid_open_fail(RVidPlayer* player, int result)
+{
+    rvid_clear_player(player);
+    return result;
+}
+
 /*
  * プレイヤー初期化
  */
 static inline int rvid_open(RVidPlayer* player, const uint8_t* data, size_t size) {
-    if (!player || !data || size < 12) return RVID_ERROR;
-
-    /* 初期化 */
-    for (size_t i = 0; i < sizeof(RVidPlayer); i++) {
-        ((uint8_t*)player)[i] = 0;
-    }
+    if (!player) return RVID_ERROR;
+    rvid_clear_player(player);
+    if (!data || size < 12) return RVID_ERROR;
     player->data = data;
     player->size = size;
     player->state = RVID_STATE_STOPPED;
@@ -229,7 +239,7 @@ static inline int rvid_open(RVidPlayer* player, const uint8_t* data, size_t size
     /* AVI解析 */
     int ret = ravi_open(&player->avi, data, size);
     if (ret != RAVI_OK) {
-        return RVID_DATA_ERROR;
+        return rvid_open_fail(player, RVID_DATA_ERROR);
     }
 
     /* ビデオ情報取得 */
@@ -242,7 +252,7 @@ static inline int rvid_open(RVidPlayer* player, const uint8_t* data, size_t size
     player->video_info.codec = rvid_detect_codec(codec_fourcc);
 
     if (player->video_info.codec == RVID_CODEC_UNKNOWN) {
-        return RVID_UNSUPPORTED;
+        return rvid_open_fail(player, RVID_UNSUPPORTED);
     }
 
     /* オーディオ情報取得 */
@@ -274,7 +284,7 @@ static inline void rvid_close(RVidPlayer* player) {
  * フレームバッファ設定
  */
 static inline int rvid_set_frame_buffer(RVidPlayer* player, uint32_t* buffer, int size) {
-    if (!player || !buffer) return RVID_ERROR;
+    if (!player || !buffer || size <= 0) return RVID_ERROR;
     player->frame_buffer = buffer;
     player->frame_buffer_size = size;
     return RVID_OK;
@@ -386,6 +396,8 @@ static inline int rvid_next_frame(RVidPlayer* player, uint32_t* pixels,
  */
 static inline int rvid_get_audio_chunk(RVidPlayer* player, uint32_t chunk_num,
                                         const uint8_t** data, size_t* size) {
+    if (data) *data = NULL;
+    if (size) *size = 0u;
     if (!player || !data || !size) return RVID_ERROR;
     if (player->audio_info.format == RVID_AUDIO_NONE) return RVID_ERROR;
 
@@ -406,9 +418,16 @@ static inline int rvid_get_audio_chunk(RVidPlayer* player, uint32_t chunk_num,
 static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
                                            int16_t* output, int max_samples,
                                            int* samples_out) {
+    if (samples_out) *samples_out = 0;
     if (!player || !output || !samples_out) return RVID_ERROR;
     if (max_samples <= 0) return RVID_ERROR;
     if (player->audio_info.format != RVID_AUDIO_PCM) return RVID_UNSUPPORTED;
+    if (player->audio_info.channels <= 0 ||
+        player->audio_info.channels > 2 ||
+        player->audio_info.sample_rate <= 0 ||
+        (player->audio_info.bits_per_sample != 8 &&
+         player->audio_info.bits_per_sample != 16))
+        return RVID_DATA_ERROR;
 
     /* 時間からサンプル位置を計算 */
     uint32_t target_sample = (uint32_t)((uint64_t)time_ms *
@@ -419,6 +438,7 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
     uint32_t accumulated_samples = 0;
     int bytes_per_sample = player->audio_info.bits_per_sample / 8 *
                            player->audio_info.channels;
+    if (bytes_per_sample <= 0) return RVID_DATA_ERROR;
 
     while (1) {
         const uint8_t* chunk_data;
