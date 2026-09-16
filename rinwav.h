@@ -167,75 +167,151 @@ static inline int16_t rwav_ulaw_to_linear(uint8_t u) {
  * 公開API
  * ═══════════════════════════════════════════════════════════════*/
 
+static inline uint16_t rwav_read_le16(const uint8_t* bytes)
+{
+    return (uint16_t)bytes[0] | (uint16_t)((uint16_t)bytes[1] << 8u);
+}
+
+static inline uint32_t rwav_read_le32(const uint8_t* bytes)
+{
+    return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8u) |
+           ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
+}
+
+static inline float rwav_read_le_float(const uint8_t* bytes)
+{
+    union {
+        uint32_t bits;
+        float value;
+    } decoded;
+    decoded.bits = rwav_read_le32(bytes);
+    return decoded.value;
+}
+
+static inline int rwav_checked_sample_count(size_t samples,
+                                             uint16_t channels,
+                                             size_t* count_out)
+{
+    if (count_out == NULL || channels == 0u ||
+        samples > SIZE_MAX / (size_t)channels)
+        return 0;
+    *count_out = samples * (size_t)channels;
+    return 1;
+}
+
+static inline int rwav_checked_sample_bytes(size_t samples,
+                                             uint16_t channels,
+                                             size_t bytes_per_sample,
+                                             size_t* bytes_out)
+{
+    size_t count;
+    if (bytes_per_sample == 0u ||
+        !rwav_checked_sample_count(samples, channels, &count) ||
+        count > SIZE_MAX / bytes_per_sample)
+        return 0;
+    *bytes_out = count * bytes_per_sample;
+    return 1;
+}
+
 /*
  * WAVファイルを開く
  */
 static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) {
-    if (!ctx || !data || size < 44) return RWAV_ERROR;
+    size_t container_end;
+    size_t pos;
+    uint32_t file_size;
+    int format_seen = 0;
+    int data_seen = 0;
 
-    /* 初期化 */
-    for (size_t i = 0; i < sizeof(RWavContext); i++) {
-        ((uint8_t*)ctx)[i] = 0;
-    }
-    ctx->data = data;
-    ctx->size = size;
+    if (ctx == NULL) return RWAV_ERROR;
+    for (size_t index = 0u; index < sizeof(*ctx); ++index)
+        ((uint8_t*)ctx)[index] = 0u;
+    if (data == NULL || size < 12u) return RWAV_ERROR;
 
-    size_t pos = 0;
-
-    /* RIFFヘッダー確認 */
-    uint32_t riff = *(uint32_t*)(data + pos); pos += 4;
-    uint32_t file_size = *(uint32_t*)(data + pos); pos += 4;
-    uint32_t wave = *(uint32_t*)(data + pos); pos += 4;
-    (void)file_size;
-
-    if (riff != RWAV_RIFF || wave != RWAV_WAVE) {
+    if (rwav_read_le32(data) != RWAV_RIFF ||
+        rwav_read_le32(data + 8u) != RWAV_WAVE)
         return RWAV_DATA_ERROR;
-    }
+    file_size = rwav_read_le32(data + 4u);
+    if (file_size < 4u ||
+        (uint64_t)file_size + 8u > (uint64_t)size)
+        return RWAV_DATA_ERROR;
+    container_end = (size_t)((uint64_t)file_size + 8u);
+    ctx->data = data;
+    ctx->size = container_end;
+    pos = 12u;
 
-    /* チャンク解析 */
-    while (pos < size - 8) {
-        uint32_t chunk_id = *(uint32_t*)(data + pos); pos += 4;
-        uint32_t chunk_size = *(uint32_t*)(data + pos); pos += 4;
+    while (pos < container_end) {
+        uint32_t chunk_id;
+        uint32_t chunk_size;
+        size_t payload;
+        size_t chunk_end;
+        size_t padded_end;
+        if (container_end - pos < 8u) return RWAV_DATA_ERROR;
+        chunk_id = rwav_read_le32(data + pos);
+        chunk_size = rwav_read_le32(data + pos + 4u);
+        payload = pos + 8u;
+        if ((size_t)chunk_size > container_end - payload)
+            return RWAV_DATA_ERROR;
+        chunk_end = payload + (size_t)chunk_size;
+        if ((size_t)(chunk_size & 1u) > container_end - chunk_end)
+            return RWAV_DATA_ERROR;
+        padded_end = chunk_end + (size_t)(chunk_size & 1u);
 
         if (chunk_id == RWAV_FMT) {
-            if (chunk_size >= sizeof(RWavFormat)) {
-                RWavFormat* fmt = (RWavFormat*)(data + pos);
-                ctx->format = fmt->format_tag;
-                ctx->channels = fmt->channels;
-                ctx->sample_rate = fmt->samples_per_sec;
-                ctx->bits_per_sample = fmt->bits_per_sample;
-                ctx->block_align = fmt->block_align;
-
-                /* 拡張フォーマット対応 */
-                if (ctx->format == RWAV_FORMAT_EXTENSIBLE && chunk_size >= sizeof(RWavFormatEx)) {
-                    RWavFormatEx* fmtex = (RWavFormatEx*)(data + pos);
-                    ctx->format = *(uint16_t*)fmtex->sub_format;
-                }
+            if (format_seen || chunk_size < 16u) return RWAV_DATA_ERROR;
+            ctx->format = rwav_read_le16(data + payload);
+            ctx->channels = rwav_read_le16(data + payload + 2u);
+            ctx->sample_rate = rwav_read_le32(data + payload + 4u);
+            ctx->block_align = rwav_read_le16(data + payload + 12u);
+            ctx->bits_per_sample = rwav_read_le16(data + payload + 14u);
+            if (ctx->format == RWAV_FORMAT_EXTENSIBLE) {
+                if (chunk_size < sizeof(RWavFormatEx) ||
+                    rwav_read_le16(data + payload + 16u) < 22u)
+                    return RWAV_DATA_ERROR;
+                ctx->format = rwav_read_le16(data + payload + 24u);
             }
+            format_seen = 1;
         } else if (chunk_id == RWAV_DATA) {
-            ctx->data_offset = pos;
-            ctx->data_size = chunk_size;
-            break;  /* データチャンク発見 */
+            if (data_seen) return RWAV_DATA_ERROR;
+            ctx->data_offset = payload;
+            ctx->data_size = (size_t)chunk_size;
+            data_seen = 1;
         }
-
-        pos += chunk_size;
-        if (chunk_size & 1) pos++;  /* パディング */
+        pos = padded_end;
     }
 
-    if (ctx->data_offset == 0) {
+    if (!format_seen || !data_seen || ctx->channels == 0u ||
+        ctx->channels > 2u || ctx->sample_rate == 0u ||
+        ctx->block_align == 0u)
         return RWAV_DATA_ERROR;
-    }
 
-    /* サポート確認 */
-    if (ctx->format != RWAV_FORMAT_PCM &&
-        ctx->format != RWAV_FORMAT_IEEE_FLOAT &&
-        ctx->format != RWAV_FORMAT_IMA_ADPCM &&
-        ctx->format != RWAV_FORMAT_ALAW &&
-        ctx->format != RWAV_FORMAT_MULAW) {
+    if (ctx->format == RWAV_FORMAT_PCM) {
+        size_t bytes_per_sample;
+        if (ctx->bits_per_sample != 8u && ctx->bits_per_sample != 16u &&
+            ctx->bits_per_sample != 24u && ctx->bits_per_sample != 32u)
+            return RWAV_UNSUPPORTED;
+        bytes_per_sample = (size_t)ctx->bits_per_sample / 8u;
+        if ((size_t)ctx->block_align !=
+                (size_t)ctx->channels * bytes_per_sample)
+            return RWAV_DATA_ERROR;
+    } else if (ctx->format == RWAV_FORMAT_IEEE_FLOAT) {
+        if (ctx->bits_per_sample != 32u ||
+            (size_t)ctx->block_align != (size_t)ctx->channels * 4u)
+            return RWAV_UNSUPPORTED;
+    } else if (ctx->format == RWAV_FORMAT_ALAW ||
+               ctx->format == RWAV_FORMAT_MULAW) {
+        if (ctx->bits_per_sample != 8u ||
+            (size_t)ctx->block_align != (size_t)ctx->channels)
+            return RWAV_UNSUPPORTED;
+    } else if (ctx->format == RWAV_FORMAT_IMA_ADPCM) {
+        if (ctx->bits_per_sample != 4u ||
+            (size_t)ctx->block_align < (size_t)ctx->channels * 4u)
+            return RWAV_UNSUPPORTED;
+    } else {
         return RWAV_UNSUPPORTED;
     }
 
-    ctx->read_pos = 0;
+    ctx->read_pos = 0u;
     return RWAV_OK;
 }
 
@@ -244,7 +320,16 @@ static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) 
  */
 static inline int rwav_get_info(RWavContext* ctx, int* channels, int* sample_rate,
                                  int* bits_per_sample, uint32_t* total_samples) {
+    if (channels) *channels = 0;
+    if (sample_rate) *sample_rate = 0;
+    if (bits_per_sample) *bits_per_sample = 0;
+    if (total_samples) *total_samples = 0u;
     if (!ctx) return RWAV_ERROR;
+    if (ctx->data == NULL || ctx->data_offset > ctx->size ||
+        ctx->data_size > ctx->size - ctx->data_offset ||
+        ctx->channels == 0u || ctx->channels > 2u ||
+        ctx->sample_rate == 0u || ctx->block_align == 0u)
+        return RWAV_DATA_ERROR;
 
     if (channels) *channels = ctx->channels;
     if (sample_rate) *sample_rate = ctx->sample_rate;
@@ -253,14 +338,30 @@ static inline int rwav_get_info(RWavContext* ctx, int* channels, int* sample_rat
     if (total_samples) {
         if (ctx->format == RWAV_FORMAT_IMA_ADPCM) {
             /* ADPCM: ブロック数 × ブロックあたりサンプル数 */
-            int samples_per_block = (ctx->block_align - 4 * ctx->channels) * 2 / ctx->channels + 1;
-            int num_blocks = ctx->data_size / ctx->block_align;
-            *total_samples = num_blocks * samples_per_block;
+            size_t samples_per_block;
+            size_t num_blocks;
+            uint64_t total;
+            if (ctx->bits_per_sample != 4u ||
+                (size_t)ctx->block_align < (size_t)ctx->channels * 4u)
+                return RWAV_DATA_ERROR;
+            samples_per_block =
+                ((size_t)ctx->block_align - (size_t)ctx->channels * 4u) *
+                    2u / (size_t)ctx->channels + 1u;
+            num_blocks = ctx->data_size / (size_t)ctx->block_align;
+            total = (uint64_t)num_blocks * (uint64_t)samples_per_block;
+            *total_samples = total > UINT32_MAX ? UINT32_MAX :
+                              (uint32_t)total;
         } else {
-            int bytes_per_sample = ctx->bits_per_sample / 8;
-            if (bytes_per_sample > 0 && ctx->channels > 0) {
-                *total_samples = ctx->data_size / (bytes_per_sample * ctx->channels);
-            }
+            size_t bytes_per_sample = (size_t)ctx->bits_per_sample / 8u;
+            size_t frame_bytes;
+            if (bytes_per_sample == 0u ||
+                (size_t)ctx->channels > SIZE_MAX / bytes_per_sample)
+                return RWAV_DATA_ERROR;
+            frame_bytes = bytes_per_sample * (size_t)ctx->channels;
+            *total_samples = (uint32_t)(ctx->data_size / frame_bytes >
+                                            UINT32_MAX
+                                        ? UINT32_MAX
+                                        : ctx->data_size / frame_bytes);
         }
     }
 
@@ -282,6 +383,16 @@ static inline uint32_t rwav_get_duration_ms(RWavContext* ctx) {
  */
 static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_samples) {
     if (!ctx || !output) return RWAV_ERROR;
+    if (num_samples == 0u) return RWAV_END_OF_FILE;
+    if (ctx->data == NULL || ctx->data_offset > ctx->size ||
+        ctx->data_size > ctx->size - ctx->data_offset ||
+        ctx->read_pos > ctx->data_size || ctx->channels == 0u ||
+        ctx->channels > 2u || ctx->block_align == 0u)
+        return RWAV_DATA_ERROR;
+    if (ctx->format == RWAV_FORMAT_IMA_ADPCM &&
+        (ctx->bits_per_sample != 4u ||
+         (size_t)ctx->block_align < (size_t)ctx->channels * 4u))
+        return RWAV_DATA_ERROR;
 
     const uint8_t* src = ctx->data + ctx->data_offset + ctx->read_pos;
     size_t remaining = ctx->data_size - ctx->read_pos;
@@ -290,19 +401,25 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
     if (ctx->format == RWAV_FORMAT_PCM) {
         if (ctx->bits_per_sample == 16) {
             /* 16bit PCM: そのままコピー */
-            size_t bytes = num_samples * ctx->channels * 2;
+            size_t bytes;
+            if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 2u,
+                                           &bytes))
+                return RWAV_ERROR;
             if (bytes > remaining) bytes = remaining;
             size_t count = bytes / 2;
 
             for (size_t i = 0; i < count; i++) {
-                output[i] = *(int16_t*)(src + i * 2);
+                output[i] = (int16_t)rwav_read_le16(src + i * 2u);
             }
             ctx->read_pos += bytes;
             samples_read = count / ctx->channels;
 
         } else if (ctx->bits_per_sample == 8) {
             /* 8bit PCM: unsigned -> signed 変換 */
-            size_t bytes = num_samples * ctx->channels;
+            size_t bytes;
+            if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 1u,
+                                           &bytes))
+                return RWAV_ERROR;
             if (bytes > remaining) bytes = remaining;
 
             for (size_t i = 0; i < bytes; i++) {
@@ -313,7 +430,10 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
 
         } else if (ctx->bits_per_sample == 24) {
             /* 24bit PCM: 上位16bitを取得 */
-            size_t bytes = num_samples * ctx->channels * 3;
+            size_t bytes;
+            if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 3u,
+                                           &bytes))
+                return RWAV_ERROR;
             if (bytes > remaining) bytes = remaining;
             size_t count = bytes / 3;
 
@@ -325,12 +445,15 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
 
         } else if (ctx->bits_per_sample == 32) {
             /* 32bit PCM: 上位16bitを取得 */
-            size_t bytes = num_samples * ctx->channels * 4;
+            size_t bytes;
+            if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 4u,
+                                           &bytes))
+                return RWAV_ERROR;
             if (bytes > remaining) bytes = remaining;
             size_t count = bytes / 4;
 
             for (size_t i = 0; i < count; i++) {
-                int32_t val = *(int32_t*)(src + i * 4);
+                int32_t val = (int32_t)rwav_read_le32(src + i * 4u);
                 output[i] = (int16_t)(val >> 16);
             }
             ctx->read_pos += bytes;
@@ -339,12 +462,15 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
 
     } else if (ctx->format == RWAV_FORMAT_IEEE_FLOAT) {
         /* 32bit float */
-        size_t bytes = num_samples * ctx->channels * 4;
+        size_t bytes;
+        if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 4u,
+                                       &bytes))
+            return RWAV_ERROR;
         if (bytes > remaining) bytes = remaining;
         size_t count = bytes / 4;
 
         for (size_t i = 0; i < count; i++) {
-            float f = *(float*)(src + i * 4);
+            float f = rwav_read_le_float(src + i * 4u);
             if (f > 1.0f) f = 1.0f;
             if (f < -1.0f) f = -1.0f;
             output[i] = (int16_t)(f * 32767.0f);
@@ -354,7 +480,10 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
 
     } else if (ctx->format == RWAV_FORMAT_ALAW) {
         /* A-law */
-        size_t bytes = num_samples * ctx->channels;
+        size_t bytes;
+        if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 1u,
+                                       &bytes))
+            return RWAV_ERROR;
         if (bytes > remaining) bytes = remaining;
 
         for (size_t i = 0; i < bytes; i++) {
@@ -365,7 +494,10 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
 
     } else if (ctx->format == RWAV_FORMAT_MULAW) {
         /* μ-law */
-        size_t bytes = num_samples * ctx->channels;
+        size_t bytes;
+        if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 1u,
+                                       &bytes))
+            return RWAV_ERROR;
         if (bytes > remaining) bytes = remaining;
 
         for (size_t i = 0; i < bytes; i++) {
@@ -377,15 +509,19 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
     } else if (ctx->format == RWAV_FORMAT_IMA_ADPCM) {
         /* IMA ADPCM */
         size_t out_idx = 0;
-        size_t max_out = num_samples * ctx->channels;
+        size_t max_out;
+        if (!rwav_checked_sample_count(num_samples, ctx->channels, &max_out))
+            return RWAV_ERROR;
 
-        while (ctx->read_pos + ctx->block_align <= ctx->data_size && out_idx < max_out) {
+        while (ctx->data_size - ctx->read_pos >= ctx->block_align &&
+               out_idx < max_out) {
             const uint8_t* block = ctx->data + ctx->data_offset + ctx->read_pos;
 
             /* ブロックヘッダー読み取り */
             for (int ch = 0; ch < ctx->channels; ch++) {
-                ctx->adpcm_predictor[ch] = *(int16_t*)(block + ch * 4);
-                ctx->adpcm_step_index[ch] = block[ch * 4 + 2];
+                ctx->adpcm_predictor[ch] =
+                    (int16_t)rwav_read_le16(block + (size_t)ch * 4u);
+                ctx->adpcm_step_index[ch] = block[(size_t)ch * 4u + 2u];
                 if (ctx->adpcm_step_index[ch] > 88) ctx->adpcm_step_index[ch] = 88;
             }
 
@@ -430,15 +566,38 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
  */
 static inline int rwav_seek(RWavContext* ctx, uint32_t sample_pos) {
     if (!ctx) return RWAV_ERROR;
+    if (ctx->data == NULL || ctx->data_offset > ctx->size ||
+        ctx->data_size > ctx->size - ctx->data_offset ||
+        ctx->channels == 0u || ctx->channels > 2u ||
+        ctx->block_align == 0u)
+        return RWAV_DATA_ERROR;
 
     if (ctx->format == RWAV_FORMAT_IMA_ADPCM) {
         /* ADPCM: ブロック単位でシーク */
-        int samples_per_block = (ctx->block_align - 4 * ctx->channels) * 2 / ctx->channels + 1;
-        int block_num = sample_pos / samples_per_block;
-        ctx->read_pos = block_num * ctx->block_align;
+        size_t samples_per_block;
+        size_t block_num;
+        if (ctx->bits_per_sample != 4u ||
+            (size_t)ctx->block_align < (size_t)ctx->channels * 4u)
+            return RWAV_DATA_ERROR;
+        samples_per_block =
+            ((size_t)ctx->block_align - (size_t)ctx->channels * 4u) * 2u /
+                (size_t)ctx->channels + 1u;
+        block_num = (size_t)sample_pos / samples_per_block;
+        if (block_num > SIZE_MAX / (size_t)ctx->block_align)
+            ctx->read_pos = ctx->data_size;
+        else
+            ctx->read_pos = block_num * (size_t)ctx->block_align;
     } else {
-        int bytes_per_sample = ctx->bits_per_sample / 8 * ctx->channels;
-        ctx->read_pos = sample_pos * bytes_per_sample;
+        size_t bytes_per_sample = (size_t)ctx->bits_per_sample / 8u;
+        size_t frame_bytes;
+        if (bytes_per_sample == 0u ||
+            (size_t)ctx->channels > SIZE_MAX / bytes_per_sample)
+            return RWAV_DATA_ERROR;
+        frame_bytes = bytes_per_sample * (size_t)ctx->channels;
+        if ((size_t)sample_pos > SIZE_MAX / frame_bytes)
+            ctx->read_pos = ctx->data_size;
+        else
+            ctx->read_pos = (size_t)sample_pos * frame_bytes;
     }
 
     if (ctx->read_pos > ctx->data_size) {
@@ -453,8 +612,10 @@ static inline int rwav_seek(RWavContext* ctx, uint32_t sample_pos) {
  */
 static inline int rwav_seek_ms(RWavContext* ctx, uint32_t time_ms) {
     if (!ctx) return RWAV_ERROR;
-    uint32_t sample_pos = (uint32_t)((uint64_t)time_ms * ctx->sample_rate / 1000);
-    return rwav_seek(ctx, sample_pos);
+    if (ctx->sample_rate == 0u) return RWAV_DATA_ERROR;
+    uint64_t sample_pos = (uint64_t)time_ms * ctx->sample_rate / 1000u;
+    if (sample_pos > UINT32_MAX) sample_pos = UINT32_MAX;
+    return rwav_seek(ctx, (uint32_t)sample_pos);
 }
 
 /*
@@ -472,7 +633,10 @@ static inline int rwav_reset(RWavContext* ctx) {
  * 生データポインタ取得 (直接アクセス用)
  */
 static inline const uint8_t* rwav_get_raw_data(RWavContext* ctx, size_t* size) {
-    if (!ctx) return NULL;
+    if (size) *size = 0u;
+    if (!ctx || ctx->data == NULL || ctx->data_offset > ctx->size ||
+        ctx->data_size > ctx->size - ctx->data_offset)
+        return NULL;
     if (size) *size = ctx->data_size;
     return ctx->data + ctx->data_offset;
 }
