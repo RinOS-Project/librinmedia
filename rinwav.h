@@ -213,6 +213,19 @@ static inline int rwav_checked_sample_bytes(size_t samples,
     return 1;
 }
 
+static inline void rwav_clear_context(RWavContext* ctx)
+{
+    if (ctx == NULL) return;
+    for (size_t index = 0u; index < sizeof(*ctx); ++index)
+        ((uint8_t*)ctx)[index] = 0u;
+}
+
+static inline int rwav_open_fail(RWavContext* ctx, int result)
+{
+    rwav_clear_context(ctx);
+    return result;
+}
+
 /*
  * WAVファイルを開く
  */
@@ -224,17 +237,17 @@ static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) 
     int data_seen = 0;
 
     if (ctx == NULL) return RWAV_ERROR;
-    for (size_t index = 0u; index < sizeof(*ctx); ++index)
-        ((uint8_t*)ctx)[index] = 0u;
-    if (data == NULL || size < 12u) return RWAV_ERROR;
+    rwav_clear_context(ctx);
+    if (data == NULL || size < 12u)
+        return rwav_open_fail(ctx, RWAV_ERROR);
 
     if (rwav_read_le32(data) != RWAV_RIFF ||
         rwav_read_le32(data + 8u) != RWAV_WAVE)
-        return RWAV_DATA_ERROR;
+        return rwav_open_fail(ctx, RWAV_DATA_ERROR);
     file_size = rwav_read_le32(data + 4u);
     if (file_size < 4u ||
         (uint64_t)file_size + 8u > (uint64_t)size)
-        return RWAV_DATA_ERROR;
+        return rwav_open_fail(ctx, RWAV_DATA_ERROR);
     container_end = (size_t)((uint64_t)file_size + 8u);
     ctx->data = data;
     ctx->size = container_end;
@@ -246,19 +259,21 @@ static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) 
         size_t payload;
         size_t chunk_end;
         size_t padded_end;
-        if (container_end - pos < 8u) return RWAV_DATA_ERROR;
+        if (container_end - pos < 8u)
+            return rwav_open_fail(ctx, RWAV_DATA_ERROR);
         chunk_id = rwav_read_le32(data + pos);
         chunk_size = rwav_read_le32(data + pos + 4u);
         payload = pos + 8u;
         if ((size_t)chunk_size > container_end - payload)
-            return RWAV_DATA_ERROR;
+            return rwav_open_fail(ctx, RWAV_DATA_ERROR);
         chunk_end = payload + (size_t)chunk_size;
         if ((size_t)(chunk_size & 1u) > container_end - chunk_end)
-            return RWAV_DATA_ERROR;
+            return rwav_open_fail(ctx, RWAV_DATA_ERROR);
         padded_end = chunk_end + (size_t)(chunk_size & 1u);
 
         if (chunk_id == RWAV_FMT) {
-            if (format_seen || chunk_size < 16u) return RWAV_DATA_ERROR;
+            if (format_seen || chunk_size < 16u)
+                return rwav_open_fail(ctx, RWAV_DATA_ERROR);
             ctx->format = rwav_read_le16(data + payload);
             ctx->channels = rwav_read_le16(data + payload + 2u);
             ctx->sample_rate = rwav_read_le32(data + payload + 4u);
@@ -267,12 +282,13 @@ static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) 
             if (ctx->format == RWAV_FORMAT_EXTENSIBLE) {
                 if (chunk_size < sizeof(RWavFormatEx) ||
                     rwav_read_le16(data + payload + 16u) < 22u)
-                    return RWAV_DATA_ERROR;
+                    return rwav_open_fail(ctx, RWAV_DATA_ERROR);
                 ctx->format = rwav_read_le16(data + payload + 24u);
             }
             format_seen = 1;
         } else if (chunk_id == RWAV_DATA) {
-            if (data_seen) return RWAV_DATA_ERROR;
+            if (data_seen)
+                return rwav_open_fail(ctx, RWAV_DATA_ERROR);
             ctx->data_offset = payload;
             ctx->data_size = (size_t)chunk_size;
             data_seen = 1;
@@ -283,32 +299,32 @@ static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) 
     if (!format_seen || !data_seen || ctx->channels == 0u ||
         ctx->channels > 2u || ctx->sample_rate == 0u ||
         ctx->block_align == 0u)
-        return RWAV_DATA_ERROR;
+        return rwav_open_fail(ctx, RWAV_DATA_ERROR);
 
     if (ctx->format == RWAV_FORMAT_PCM) {
         size_t bytes_per_sample;
         if (ctx->bits_per_sample != 8u && ctx->bits_per_sample != 16u &&
             ctx->bits_per_sample != 24u && ctx->bits_per_sample != 32u)
-            return RWAV_UNSUPPORTED;
+            return rwav_open_fail(ctx, RWAV_UNSUPPORTED);
         bytes_per_sample = (size_t)ctx->bits_per_sample / 8u;
         if ((size_t)ctx->block_align !=
                 (size_t)ctx->channels * bytes_per_sample)
-            return RWAV_DATA_ERROR;
+            return rwav_open_fail(ctx, RWAV_DATA_ERROR);
     } else if (ctx->format == RWAV_FORMAT_IEEE_FLOAT) {
         if (ctx->bits_per_sample != 32u ||
             (size_t)ctx->block_align != (size_t)ctx->channels * 4u)
-            return RWAV_UNSUPPORTED;
+            return rwav_open_fail(ctx, RWAV_UNSUPPORTED);
     } else if (ctx->format == RWAV_FORMAT_ALAW ||
                ctx->format == RWAV_FORMAT_MULAW) {
         if (ctx->bits_per_sample != 8u ||
             (size_t)ctx->block_align != (size_t)ctx->channels)
-            return RWAV_UNSUPPORTED;
+            return rwav_open_fail(ctx, RWAV_UNSUPPORTED);
     } else if (ctx->format == RWAV_FORMAT_IMA_ADPCM) {
         if (ctx->bits_per_sample != 4u ||
             (size_t)ctx->block_align < (size_t)ctx->channels * 4u)
-            return RWAV_UNSUPPORTED;
+            return rwav_open_fail(ctx, RWAV_UNSUPPORTED);
     } else {
-        return RWAV_UNSUPPORTED;
+        return rwav_open_fail(ctx, RWAV_UNSUPPORTED);
     }
 
     ctx->read_pos = 0u;
