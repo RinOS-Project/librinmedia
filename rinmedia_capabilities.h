@@ -12,6 +12,15 @@
 
 #define RIN_MEDIA_CAPABILITY_ABI_V1 1u
 #define RIN_MEDIA_CAPABILITY_NAME_MAX 16u
+#define RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES (4u * 1024u * 1024u)
+
+enum {
+    RIN_MEDIA_CONTAINER_MP4 = 1u,
+    RIN_MEDIA_CONTAINER_WEBM = 2u,
+    RIN_MEDIA_CONTAINER_MATROSKA = 3u,
+    RIN_MEDIA_CONTAINER_AVI = 4u,
+    RIN_MEDIA_CONTAINER_WAV = 5u
+};
 
 enum {
     RIN_MEDIA_CODEC_WAV = 1u,
@@ -37,5 +46,11 @@ int rin_media_capability_get(uint32_t index, RinMediaCapabilityV1* output,
                              size_t output_size);
 int rin_media_capability_find(const char* name, size_t name_bytes,
                               uint32_t* codec_id);
+
+/* Bounded, allocation-free container admission. This recognizes only the
+ * container envelope; stream tables, codec parameters, and packet ownership
+ * remain the Demuxer/backend responsibility. */
+int rin_media_container_probe(const uint8_t* data, size_t source_bytes,
+                              uint32_t* container_id);
 
 #endif

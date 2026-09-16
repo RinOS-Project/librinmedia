@@ -3,6 +3,132 @@
 
 #include <string.h>
 
+static uint32_t read_be32(const uint8_t* value)
+{
+    return ((uint32_t)value[0] << 24u) |
+           ((uint32_t)value[1] << 16u) |
+           ((uint32_t)value[2] << 8u) |
+           (uint32_t)value[3];
+}
+
+static uint32_t read_le32(const uint8_t* value)
+{
+    return (uint32_t)value[0] |
+           ((uint32_t)value[1] << 8u) |
+           ((uint32_t)value[2] << 16u) |
+           ((uint32_t)value[3] << 24u);
+}
+
+static int fourcc(const uint8_t* value, char a, char b, char c, char d)
+{
+    return value[0] == (uint8_t)a && value[1] == (uint8_t)b &&
+           value[2] == (uint8_t)c && value[3] == (uint8_t)d;
+}
+
+static int ebml_vint_length(uint8_t first)
+{
+    uint8_t mask = 0x80u;
+    int length = 1;
+    while (length <= 8 && (first & mask) == 0u) {
+        mask = (uint8_t)(mask >> 1u);
+        ++length;
+    }
+    return length > 8 ? 0 : length;
+}
+
+static uint64_t ebml_vint_value(const uint8_t* data, int length)
+{
+    uint64_t value = (uint64_t)(data[0] & (uint8_t)(0xffu >> length));
+    int index;
+    for (index = 1; index < length; ++index)
+        value = (value << 8u) | data[index];
+    return value;
+}
+
+static int ebml_doctype(const uint8_t* data, size_t source_bytes,
+                        uint32_t* container_id)
+{
+    size_t offset;
+    size_t header_end;
+    int size_length;
+    uint64_t header_size;
+    if (source_bytes < 5u || read_be32(data) != UINT32_C(0x1a45dfa3))
+        return 0;
+    size_length = ebml_vint_length(data[4]);
+    if (size_length == 0 || source_bytes < 4u + (size_t)size_length)
+        return 0;
+    header_size = ebml_vint_value(data + 4, size_length);
+    offset = 4u + (size_t)size_length;
+    if (header_size > (uint64_t)(source_bytes - offset)) return 0;
+    header_end = offset + (size_t)header_size;
+    while (offset < header_end) {
+        uint64_t element_id = 0u;
+        uint64_t element_size;
+        size_t element_end;
+        int id_length = ebml_vint_length(data[offset]);
+        int element_size_length;
+        int index;
+        if (id_length == 0 || (size_t)id_length > header_end - offset)
+            return 0;
+        for (index = 0; index < id_length; ++index)
+            element_id = (element_id << 8u) | data[offset + (size_t)index];
+        offset += (size_t)id_length;
+        if (offset >= header_end) return 0;
+        element_size_length = ebml_vint_length(data[offset]);
+        if (element_size_length == 0 ||
+            (size_t)element_size_length > header_end - offset)
+            return 0;
+        element_size = ebml_vint_value(data + offset, element_size_length);
+        offset += (size_t)element_size_length;
+        if (element_size > (uint64_t)(header_end - offset)) return 0;
+        element_end = offset + (size_t)element_size;
+        if (element_id == UINT32_C(0x4282)) {
+            if (element_size == 4u &&
+                memcmp(data + offset, "webm", 4u) == 0) {
+                *container_id = RIN_MEDIA_CONTAINER_WEBM;
+                return 1;
+            }
+            if (element_size == 8u &&
+                memcmp(data + offset, "matroska", 8u) == 0) {
+                *container_id = RIN_MEDIA_CONTAINER_MATROSKA;
+                return 1;
+            }
+            return 0;
+        }
+        offset = element_end;
+    }
+    return 0;
+}
+
+static int iso_bmff(const uint8_t* data, size_t source_bytes,
+                    uint32_t* container_id)
+{
+    size_t offset = 0u;
+    while (offset + 8u <= source_bytes) {
+        uint64_t box_size = read_be32(data + offset);
+        size_t header_size = 8u;
+        size_t box_end;
+        if (box_size == 1u) {
+            if (offset + 16u > source_bytes) return 0;
+            box_size = ((uint64_t)read_be32(data + offset + 8u) << 32u) |
+                       read_be32(data + offset + 12u);
+            header_size = 16u;
+        } else if (box_size == 0u) {
+            return 0;
+        }
+        if (box_size < (uint64_t)header_size ||
+            box_size > (uint64_t)(source_bytes - offset)) return 0;
+        box_end = offset + (size_t)box_size;
+        if (fourcc(data + offset + 4u, 'f', 't', 'y', 'p')) {
+            if (box_size < 16u) return 0;
+            *container_id = RIN_MEDIA_CONTAINER_MP4;
+            return 1;
+        }
+        offset = box_end;
+    }
+    return 0;
+}
+
 typedef struct RinMediaCapabilityEntry {
     uint32_t codec_id;
     const char* name;
@@ -68,5 +194,32 @@ int rin_media_capability_find(const char* name, size_t name_bytes,
             return 0;
         }
     }
+    return -1;
+}
+
+int rin_media_container_probe(const uint8_t* data, size_t source_bytes,
+                              uint32_t* container_id)
+{
+    if (container_id != NULL) *container_id = 0u;
+    if (data == NULL || container_id == NULL || source_bytes == 0u ||
+        source_bytes > RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES)
+        return -1;
+    if (source_bytes >= 12u && fourcc(data, 'R', 'I', 'F', 'F')) {
+        /* RIFF size includes the form type and all bytes following it. */
+        if ((uint64_t)read_le32(data + 4u) + 8u > (uint64_t)source_bytes)
+            return -1;
+        if (fourcc(data + 8u, 'A', 'V', 'I', ' ')) {
+            *container_id = RIN_MEDIA_CONTAINER_AVI;
+            return 0;
+        }
+        if (fourcc(data + 8u, 'W', 'A', 'V', 'E')) {
+            *container_id = RIN_MEDIA_CONTAINER_WAV;
+            return 0;
+        }
+        return -1;
+    }
+    if (ebml_doctype(data, source_bytes, container_id) != 0) return 0;
+    if (iso_bmff(data, source_bytes, container_id) != 0) return 0;
+    *container_id = 0u;
     return -1;
 }
