@@ -81,7 +81,8 @@ struct AudioFrame {
     bool valid() const {
         return samples != nullptr && sampleCount != 0u &&
                channels != 0u && channels <= kMediaMaxChannels &&
-               sampleRate != 0u && timestampMs >= 0;
+               sampleRate != 0u && timestampMs >= 0 &&
+               sampleCount <= SIZE_MAX / static_cast<size_t>(channels);
     }
 };
 
@@ -95,7 +96,9 @@ struct VideoFrame {
     bool valid() const {
         return pixels != nullptr && width != 0u && height != 0u &&
                width <= UINT32_MAX / 4u &&
-               strideBytes >= width * 4u && timestampMs >= 0;
+               strideBytes >= width * 4u && timestampMs >= 0 &&
+               static_cast<size_t>(height) <=
+                   SIZE_MAX / static_cast<size_t>(strideBytes);
     }
 };
 
