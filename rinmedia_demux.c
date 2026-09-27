@@ -506,7 +506,8 @@ static int mp4_parse_sample_table(const uint8_t* data, size_t length,
             uint32_t run = read_be32(data + 8u + index * 8u);
             uint32_t duration = read_be32(data + 12u + index * 8u);
             uint32_t item;
-            if (run == 0u || sample > RIN_MEDIA_DEMUX_MAX_PACKETS - run)
+            if (run == 0u || run > RIN_MEDIA_DEMUX_MAX_PACKETS ||
+                sample > RIN_MEDIA_DEMUX_MAX_PACKETS - run)
                 return -1;
             for (item = 0u; item < run; ++item)
                 tables->sample_durations[sample++] = duration;
@@ -532,7 +533,8 @@ static int mp4_parse_sample_table(const uint8_t* data, size_t length,
             int64_t offset = version == 1u ? (int64_t)(int32_t)raw :
                                             (int64_t)raw;
             uint32_t item;
-            if (run == 0u || sample > RIN_MEDIA_DEMUX_MAX_PACKETS - run)
+            if (run == 0u || run > RIN_MEDIA_DEMUX_MAX_PACKETS ||
+                sample > RIN_MEDIA_DEMUX_MAX_PACKETS - run)
                 return -1;
             for (item = 0u; item < run; ++item)
                 tables->composition_offsets[sample++] = offset;
