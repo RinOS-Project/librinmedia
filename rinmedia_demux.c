@@ -371,6 +371,9 @@ static int wav_inspect(const uint8_t* data, size_t source_bytes,
         rwav_get_info(&context, 0, 0, 0, &total_samples) != RWAV_OK)
         return result == RWAV_DATA_ERROR ? RIN_MEDIA_DEMUX_INVALID :
                RIN_MEDIA_DEMUX_UNSUPPORTED;
+    if (context.block_align == 0u ||
+        context.data_size % context.block_align != 0u)
+        return RIN_MEDIA_DEMUX_INVALID;
     if (!wav_fill_track(&context, total_samples, &output->tracks[0]))
         return RIN_MEDIA_DEMUX_UNSUPPORTED;
     output->track_count = 1u;
