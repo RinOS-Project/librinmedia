@@ -698,6 +698,8 @@ static int flac_index_packets(const uint8_t* data, size_t source_bytes,
                 1024u * 1024u || frame.block_samples == 0u)
             return 0;
         if (frame.variable_blocking) {
+            if (output->packet_count != 0u && frame.number < timestamp)
+                return 0;
             timestamp = frame.number;
         } else if (UINT64_MAX - timestamp < frame.block_samples) {
             return 0;
