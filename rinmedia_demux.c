@@ -567,6 +567,150 @@ static int ogg_inspect(const uint8_t* data, size_t source_bytes,
     return RIN_MEDIA_DEMUX_OK;
 }
 
+typedef struct AdtsFrameHeader {
+    size_t frame_bytes;
+    uint32_t profile;
+    uint32_t sample_rate;
+    uint32_t channels;
+    uint32_t samples;
+} AdtsFrameHeader;
+
+static const uint32_t kAdtsSampleRates[] = {
+    96000u, 88200u, 64000u, 48000u, 44100u, 32000u, 24000u,
+    22050u, 16000u, 12000u, 11025u, 8000u, 7350u
+};
+
+static int adts_frame_header(const uint8_t* data, size_t source_bytes,
+                             size_t offset, AdtsFrameHeader* output)
+{
+    const uint8_t* header;
+    uint32_t sample_rate_index;
+    uint32_t channel_configuration;
+    uint32_t raw_data_blocks;
+    size_t header_bytes;
+    size_t frame_bytes;
+    if (!data || !output || offset > source_bytes ||
+        source_bytes - offset < 7u)
+        return 0;
+    header = data + offset;
+    if (header[0] != 0xffu || (header[1] & 0xf6u) != 0xf0u)
+        return 0;
+    sample_rate_index = ((uint32_t)header[2] >> 2u) & 0x0fu;
+    channel_configuration = ((uint32_t)(header[2] & 0x01u) << 2u) |
+                            ((uint32_t)header[3] >> 6u);
+    if (sample_rate_index >= (uint32_t)(sizeof(kAdtsSampleRates) /
+                                        sizeof(kAdtsSampleRates[0])) ||
+        channel_configuration == 0u || channel_configuration > 6u)
+        return 0;
+    header_bytes = (header[1] & 0x01u) != 0u ? 7u : 9u;
+    frame_bytes = ((size_t)(header[3] & 0x03u) << 11u) |
+                  ((size_t)header[4] << 3u) | ((size_t)header[5] >> 5u);
+    if (frame_bytes <= header_bytes || frame_bytes > source_bytes - offset)
+        return 0;
+    raw_data_blocks = (uint32_t)(header[6] & 0x03u) + 1u;
+    memset(output, 0, sizeof(*output));
+    output->frame_bytes = frame_bytes;
+    output->profile = ((uint32_t)header[2] >> 6u) + 1u;
+    output->sample_rate = kAdtsSampleRates[sample_rate_index];
+    output->channels = channel_configuration;
+    output->samples = raw_data_blocks * 1024u;
+    return 1;
+}
+
+static int adts_inspect(const uint8_t* data, size_t source_bytes,
+                        RinMediaDemuxInfoV1* output)
+{
+    AdtsFrameHeader frame;
+    RinMediaDemuxTrackV1 track;
+    size_t offset = 0u;
+    uint64_t duration = 0u;
+    uint32_t frame_count = 0u;
+    uint32_t profile = 0u;
+    uint32_t sample_rate = 0u;
+    uint32_t channels = 0u;
+    uint32_t container = 0u;
+    if (rin_media_container_probe(data, source_bytes, &container) != 0 ||
+        container != RIN_MEDIA_CONTAINER_ADTS)
+        return RIN_MEDIA_DEMUX_INVALID;
+    while (offset < source_bytes) {
+        if (frame_count++ >= 65536u ||
+            !adts_frame_header(data, source_bytes, offset, &frame))
+            return RIN_MEDIA_DEMUX_INVALID;
+        if (profile == 0u) {
+            profile = frame.profile;
+            sample_rate = frame.sample_rate;
+            channels = frame.channels;
+        } else if (profile != frame.profile || sample_rate != frame.sample_rate ||
+                   channels != frame.channels) {
+            return RIN_MEDIA_DEMUX_UNSUPPORTED;
+        }
+        if (UINT64_MAX - duration < frame.samples)
+            return RIN_MEDIA_DEMUX_INVALID;
+        duration += frame.samples;
+        offset += frame.frame_bytes;
+    }
+    if (frame_count == 0u || offset != source_bytes)
+        return RIN_MEDIA_DEMUX_INVALID;
+    memset(&track, 0, sizeof(track));
+    track.track_id = 1u;
+    track.kind = RIN_MEDIA_DEMUX_TRACK_AUDIO;
+    track.codec_id = RIN_MEDIA_CODEC_AAC;
+    track.time_scale = sample_rate;
+    track.duration_ticks = duration;
+    memcpy(track.codec_name, "AAC", 4u);
+    output->tracks[0] = track;
+    output->track_count = 1u;
+    output->time_scale = sample_rate;
+    output->duration_ticks = duration;
+    output->container_id = RIN_MEDIA_CONTAINER_ADTS;
+    return RIN_MEDIA_DEMUX_OK;
+}
+
+static int adts_index_packets(const uint8_t* data, size_t source_bytes,
+                              const RinMediaDemuxInfoV1* info,
+                              RinMediaDemuxPacketTableV1* output)
+{
+    RinMediaDemuxInfoV1 verified;
+    size_t offset = 0u;
+    uint64_t timestamp = 0u;
+    uint32_t profile = 0u;
+    uint32_t sample_rate = 0u;
+    uint32_t channels = 0u;
+    if (!data || !info || !output || info->container_id !=
+        RIN_MEDIA_CONTAINER_ADTS || info->track_count != 1u ||
+        rin_media_container_inspect(data, source_bytes, &verified,
+                                    sizeof(verified)) != RIN_MEDIA_DEMUX_OK)
+        return 0;
+    while (offset < source_bytes) {
+        AdtsFrameHeader frame;
+        RinMediaDemuxPacketV1 packet;
+        if (output->packet_count >= RIN_MEDIA_DEMUX_MAX_PACKETS ||
+            !adts_frame_header(data, source_bytes, offset, &frame))
+            return 0;
+        if (profile == 0u) {
+            profile = frame.profile;
+            sample_rate = frame.sample_rate;
+            channels = frame.channels;
+        } else if (profile != frame.profile || sample_rate != frame.sample_rate ||
+                   channels != frame.channels) {
+            return 0;
+        }
+        if (UINT64_MAX - timestamp < frame.samples)
+            return 0;
+        memset(&packet, 0, sizeof(packet));
+        packet.byte_offset = offset;
+        packet.byte_size = (uint32_t)frame.frame_bytes;
+        packet.track_id = 1u;
+        packet.timestamp_ticks = timestamp;
+        packet.duration_ticks = frame.samples;
+        output->packets[output->packet_count++] = packet;
+        timestamp += frame.samples;
+        offset += frame.frame_bytes;
+    }
+    return output->packet_count != 0u && offset == source_bytes &&
+           timestamp == verified.duration_ticks;
+}
+
 static int flac_inspect(const uint8_t* data, size_t source_bytes,
                         RinMediaDemuxInfoV1* output)
 {
@@ -1136,6 +1280,8 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
         result = flac_inspect(data, source_bytes, output);
     else if (container == RIN_MEDIA_CONTAINER_OGG)
         result = ogg_inspect(data, source_bytes, output);
+    else if (container == RIN_MEDIA_CONTAINER_ADTS)
+        result = adts_inspect(data, source_bytes, output);
     else if (source_bytes >= 8u &&
         read_be32(data + 4u) == UINT32_C(0x66747970))
         result = mp4_inspect(data, source_bytes, output);
@@ -1819,7 +1965,8 @@ int rin_media_container_index_packets(
         info->container_id != RIN_MEDIA_CONTAINER_MATROSKA &&
         info->container_id != RIN_MEDIA_CONTAINER_AVI &&
         info->container_id != RIN_MEDIA_CONTAINER_WAV &&
-        info->container_id != RIN_MEDIA_CONTAINER_FLAC)
+        info->container_id != RIN_MEDIA_CONTAINER_FLAC &&
+        info->container_id != RIN_MEDIA_CONTAINER_ADTS)
         return RIN_MEDIA_DEMUX_UNSUPPORTED;
     output->struct_size = sizeof(*output);
     output->abi_version = RIN_MEDIA_DEMUX_ABI_V1;
@@ -1831,6 +1978,8 @@ int rin_media_container_index_packets(
         wav_index_packets(data, source_bytes, info, output) :
         info->container_id == RIN_MEDIA_CONTAINER_FLAC ?
         flac_index_packets(data, source_bytes, info, output) :
+        info->container_id == RIN_MEDIA_CONTAINER_ADTS ?
+        adts_index_packets(data, source_bytes, info, output) :
         webm_index_packets(data, source_bytes, info, output);
     if (!result || output->packet_count == 0u) {
         memset(output, 0, sizeof(*output));

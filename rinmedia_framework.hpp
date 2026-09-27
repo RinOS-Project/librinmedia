@@ -22,6 +22,7 @@ enum class MediaContainer : uint32_t {
     Wav = 5u,
     Flac = 6u,
     Ogg = 7u,
+    Adts = 8u,
 };
 
 enum class MediaTrackKind : uint32_t {

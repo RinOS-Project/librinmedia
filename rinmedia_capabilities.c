@@ -39,6 +39,30 @@ static int ogg_page_size(const uint8_t* data, size_t source_bytes,
     return 1;
 }
 
+static int adts_frame_size(const uint8_t* data, size_t source_bytes,
+                           size_t* frame_bytes)
+{
+    uint32_t sample_rate_index;
+    uint32_t channel_configuration;
+    size_t header_bytes;
+    size_t length;
+    if (!data || !frame_bytes || source_bytes < 7u || data[0] != 0xffu ||
+        (data[1] & 0xf6u) != 0xf0u || (data[2] & 0x3cu) == 0x3cu)
+        return 0;
+    sample_rate_index = (data[2] >> 2u) & 0x0fu;
+    channel_configuration = ((uint32_t)(data[2] & 0x01u) << 2u) |
+                            ((uint32_t)data[3] >> 6u);
+    if (sample_rate_index >= 13u || channel_configuration == 0u ||
+        channel_configuration > 6u)
+        return 0;
+    header_bytes = (data[1] & 0x01u) != 0u ? 7u : 9u;
+    length = ((size_t)(data[3] & 0x03u) << 11u) |
+             ((size_t)data[4] << 3u) | ((size_t)data[5] >> 5u);
+    if (length <= header_bytes || length > source_bytes) return 0;
+    *frame_bytes = length;
+    return 1;
+}
+
 static int fourcc(const uint8_t* value, char a, char b, char c, char d)
 {
     return value[0] == (uint8_t)a && value[1] == (uint8_t)b &&
@@ -233,6 +257,13 @@ int rin_media_container_probe(const uint8_t* data, size_t source_bytes,
         size_t page_bytes;
         if (!ogg_page_size(data, source_bytes, &page_bytes)) return -1;
         *container_id = RIN_MEDIA_CONTAINER_OGG;
+        return 0;
+    }
+    if (source_bytes >= 2u && data[0] == 0xffu &&
+        (data[1] & 0xf6u) == 0xf0u) {
+        size_t frame_bytes;
+        if (!adts_frame_size(data, source_bytes, &frame_bytes)) return -1;
+        *container_id = RIN_MEDIA_CONTAINER_ADTS;
         return 0;
     }
     if (source_bytes >= 12u && fourcc(data, 'R', 'I', 'F', 'F')) {
