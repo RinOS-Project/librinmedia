@@ -383,6 +383,88 @@ static int wav_inspect(const uint8_t* data, size_t source_bytes,
     return RIN_MEDIA_DEMUX_OK;
 }
 
+static int flac_inspect(const uint8_t* data, size_t source_bytes,
+                        RinMediaDemuxInfoV1* output)
+{
+    size_t offset = 4u;
+    int found_streaminfo = 0;
+    int found_last = 0;
+    uint16_t min_block_size = 0u;
+    uint16_t max_block_size = 0u;
+    uint32_t sample_rate = 0u;
+    uint32_t channels = 0u;
+    uint32_t bits_per_sample = 0u;
+    uint64_t total_samples = 0u;
+    if (!data || !output || source_bytes < 4u ||
+        memcmp(data, "fLaC", 4u) != 0)
+        return RIN_MEDIA_DEMUX_INVALID;
+    while (offset < source_bytes) {
+        uint8_t block_header;
+        uint32_t block_size;
+        size_t block_end;
+        if (source_bytes - offset < 4u) return RIN_MEDIA_DEMUX_INVALID;
+        block_header = data[offset];
+        block_size = ((uint32_t)data[offset + 1u] << 16u) |
+                     ((uint32_t)data[offset + 2u] << 8u) |
+                     (uint32_t)data[offset + 3u];
+        offset += 4u;
+        if (block_size > source_bytes - offset)
+            return RIN_MEDIA_DEMUX_INVALID;
+        block_end = offset + (size_t)block_size;
+        if ((block_header & 0x7fu) > 6u)
+            return RIN_MEDIA_DEMUX_UNSUPPORTED;
+        if (!found_streaminfo && offset == 8u &&
+            (block_header & 0x7fu) != 0u)
+            return RIN_MEDIA_DEMUX_INVALID;
+        if ((block_header & 0x7fu) == 0u) {
+            const uint8_t* streaminfo = data + offset;
+            uint64_t packed;
+            if (found_streaminfo || block_size != 34u)
+                return RIN_MEDIA_DEMUX_INVALID;
+            min_block_size = (uint16_t)(((uint16_t)streaminfo[0] << 8u) |
+                                        streaminfo[1]);
+            max_block_size = (uint16_t)(((uint16_t)streaminfo[2] << 8u) |
+                                        streaminfo[3]);
+            if (min_block_size == 0u || max_block_size == 0u ||
+                min_block_size > max_block_size)
+                return RIN_MEDIA_DEMUX_INVALID;
+            sample_rate = ((uint32_t)streaminfo[10] << 12u) |
+                          ((uint32_t)streaminfo[11] << 4u) |
+                          ((uint32_t)streaminfo[12] >> 4u);
+            channels = (((uint32_t)streaminfo[12] & 0x0eu) >> 1u) + 1u;
+            bits_per_sample = (((uint32_t)streaminfo[12] & 0x01u) << 4u) |
+                               ((uint32_t)streaminfo[13] >> 4u);
+            bits_per_sample += 1u;
+            packed = read_be64(streaminfo + 10u);
+            total_samples = packed & UINT64_C(0xfffffffff);
+            if (sample_rate == 0u || sample_rate > 384000u ||
+                channels == 0u || channels > 8u || bits_per_sample < 4u ||
+                bits_per_sample > 32u)
+                return RIN_MEDIA_DEMUX_INVALID;
+            found_streaminfo = 1;
+        }
+        offset = block_end;
+        if ((block_header & 0x80u) != 0u) {
+            found_last = 1;
+            break;
+        }
+    }
+    if (!found_streaminfo || !found_last || offset != source_bytes)
+        return RIN_MEDIA_DEMUX_INVALID;
+    memset(&output->tracks[0], 0, sizeof(output->tracks[0]));
+    output->tracks[0].track_id = 1u;
+    output->tracks[0].kind = RIN_MEDIA_DEMUX_TRACK_AUDIO;
+    output->tracks[0].codec_id = UINT32_C(0x664c6143); /* fLaC */
+    output->tracks[0].time_scale = sample_rate;
+    output->tracks[0].duration_ticks = total_samples;
+    memcpy(output->tracks[0].codec_name, "FLAC", 5u);
+    output->track_count = 1u;
+    output->time_scale = sample_rate;
+    output->duration_ticks = total_samples;
+    output->container_id = RIN_MEDIA_CONTAINER_FLAC;
+    return RIN_MEDIA_DEMUX_OK;
+}
+
 static int ebml_vint(const uint8_t* data, size_t length, uint64_t* value,
                      size_t* bytes, int* unknown)
 {
@@ -605,6 +687,8 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
         result = avi_inspect(data, source_bytes, output);
     else if (container == RIN_MEDIA_CONTAINER_WAV)
         result = wav_inspect(data, source_bytes, output);
+    else if (container == RIN_MEDIA_CONTAINER_FLAC)
+        result = flac_inspect(data, source_bytes, output);
     else if (source_bytes >= 8u &&
         read_be32(data + 4u) == UINT32_C(0x66747970))
         result = mp4_inspect(data, source_bytes, output);

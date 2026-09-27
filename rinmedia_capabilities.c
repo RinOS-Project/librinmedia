@@ -205,6 +205,10 @@ int rin_media_container_probe(const uint8_t* data, size_t source_bytes,
     if (data == NULL || container_id == NULL || source_bytes == 0u ||
         source_bytes > RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES)
         return -1;
+    if (source_bytes >= 4u && memcmp(data, "fLaC", 4u) == 0) {
+        *container_id = RIN_MEDIA_CONTAINER_FLAC;
+        return 0;
+    }
     if (source_bytes >= 12u && fourcc(data, 'R', 'I', 'F', 'F')) {
         /* RIFF size includes the form type and all bytes following it. */
         uint32_t riff_size = read_le32(data + 4u);
