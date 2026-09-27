@@ -522,9 +522,10 @@ static int mp4_parse_sample_table(const uint8_t* data, size_t length,
         uint32_t entry_count;
         uint32_t sample = 0u;
         uint8_t version;
-        if (length < 8u ||
+        if (length < 8u || tables->has_ctts ||
             !mp4_table_count(data, length, &entry_count) ||
-            (size_t)entry_count > (length - 8u) / 8u)
+            (size_t)entry_count > (length - 8u) / 8u ||
+            data[0] > 1u)
             return -1;
         version = data[0];
         for (index = 0u; index < entry_count; ++index) {
