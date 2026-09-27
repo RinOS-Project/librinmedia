@@ -400,6 +400,21 @@ typedef struct OggPageView {
     uint8_t segment_count;
 } OggPageView;
 
+static uint32_t ogg_crc32(const uint8_t* data, size_t length)
+{
+    uint32_t crc = 0u;
+    size_t index;
+    for (index = 0u; index < length; ++index) {
+        uint8_t value = (index >= 22u && index < 26u) ? 0u : data[index];
+        uint8_t bit;
+        crc ^= (uint32_t)value << 24u;
+        for (bit = 0u; bit < 8u; ++bit)
+            crc = (crc & UINT32_C(0x80000000)) != 0u ?
+                (crc << 1u) ^ UINT32_C(0x04c11db7) : crc << 1u;
+    }
+    return crc;
+}
+
 static int ogg_page(const uint8_t* data, size_t source_bytes, size_t offset,
                     OggPageView* output)
 {
@@ -428,6 +443,9 @@ static int ogg_page(const uint8_t* data, size_t source_bytes, size_t offset,
     output->sequence = read_le32(data + offset + 18u);
     output->header_type = data[offset + 5u];
     output->segment_count = data[offset + 26u];
+    if (ogg_crc32(data + offset, output->end - offset) !=
+        read_le32(data + offset + 22u))
+        return 0;
     return 1;
 }
 
