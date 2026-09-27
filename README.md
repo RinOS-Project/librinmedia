@@ -17,3 +17,10 @@ RinMedia provides media-container parsing, audio/video decoding interfaces, and 
 | security | Treat media as untrusted. Use authenticated File Portal descriptors for the modern pipeline, enforce service authorization at the boundary, bound decode output, and do not pass arbitrary paths or shared-memory names as authority. |
 | build | Build through the owning RinOS media targets and their configured FFmpeg dependencies. No standalone build/install command is documented. |
 | test | No standalone test command is documented. Validate through the media, audio, and session targets in the consuming RinOS build. |
+
+`rinmedia_aac.h` provides a public, allocation-free MPEG-4 AudioSpecificConfig
+inspect for AAC owners. It accepts at most 32 bytes, resolves the bounded
+sampling-frequency and channel-configuration fields, and reports SBR/PS
+extension metadata without decoding payloads or taking filesystem/service
+ownership. Invalid, truncated, oversized, or unsupported configuration input
+is rejected failure-atomically.
