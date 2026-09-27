@@ -33,6 +33,12 @@ static uint32_t read_le32(const uint8_t* value)
            ((uint32_t)value[3] << 24u);
 }
 
+static uint64_t read_le64(const uint8_t* value)
+{
+    return (uint64_t)read_le32(value) |
+           ((uint64_t)read_le32(value + 4u) << 32u);
+}
+
 static int bounded_text(const uint8_t* value, size_t length, size_t capacity)
 {
     size_t index;
@@ -380,6 +386,166 @@ static int wav_inspect(const uint8_t* data, size_t source_bytes,
     output->time_scale = output->tracks[0].time_scale;
     output->duration_ticks = output->tracks[0].duration_ticks;
     output->container_id = RIN_MEDIA_CONTAINER_WAV;
+    return RIN_MEDIA_DEMUX_OK;
+}
+
+typedef struct OggPageView {
+    size_t segment_table;
+    size_t payload;
+    size_t end;
+    uint64_t granule_position;
+    uint32_t serial;
+    uint32_t sequence;
+    uint8_t header_type;
+    uint8_t segment_count;
+} OggPageView;
+
+static int ogg_page(const uint8_t* data, size_t source_bytes, size_t offset,
+                    OggPageView* output)
+{
+    size_t segment_table;
+    size_t body_bytes = 0u;
+    size_t index;
+    if (!data || !output || offset > source_bytes ||
+        source_bytes - offset < 27u ||
+        memcmp(data + offset, "OggS", 4u) != 0 || data[offset + 4u] != 0u)
+        return 0;
+    segment_table = offset + 27u + (size_t)data[offset + 26u];
+    if (segment_table < offset || segment_table > source_bytes) return 0;
+    for (index = 0u; index < (size_t)data[offset + 26u]; ++index) {
+        size_t segment = data[offset + 27u + index];
+        if (segment > source_bytes - segment_table - body_bytes)
+            return 0;
+        body_bytes += segment;
+    }
+    if (body_bytes > source_bytes - segment_table) return 0;
+    memset(output, 0, sizeof(*output));
+    output->segment_table = offset + 27u;
+    output->payload = segment_table;
+    output->end = segment_table + body_bytes;
+    output->granule_position = read_le64(data + offset + 6u);
+    output->serial = read_le32(data + offset + 14u);
+    output->sequence = read_le32(data + offset + 18u);
+    output->header_type = data[offset + 5u];
+    output->segment_count = data[offset + 26u];
+    return 1;
+}
+
+static int ogg_fill_track(const uint8_t* packet, size_t packet_bytes,
+                          uint64_t duration_ticks,
+                          RinMediaDemuxTrackV1* track)
+{
+    uint32_t channels;
+    uint32_t sample_rate;
+    if (!packet || !track) return 0;
+    memset(track, 0, sizeof(*track));
+    track->track_id = 1u;
+    track->kind = RIN_MEDIA_DEMUX_TRACK_AUDIO;
+    track->duration_ticks = duration_ticks;
+    if (packet_bytes >= 19u && memcmp(packet, "OpusHead", 8u) == 0) {
+        if (packet[8] != 1u || packet[9] == 0u || packet[9] > 32u)
+            return 0;
+        channels = packet[9];
+        sample_rate = read_le32(packet + 12u);
+        if (sample_rate == 0u || sample_rate > 384000u ||
+            packet[18] > 1u)
+            return 0;
+        if (packet[18] == 0u && channels > 2u) return 0;
+        if (packet[18] == 1u) {
+            if (packet_bytes < 21u + (size_t)channels ||
+                packet[19] == 0u || packet[19] > channels ||
+                packet[20] > packet[19])
+                return 0;
+        }
+        track->codec_id = RIN_MEDIA_CODEC_OPUS;
+        track->time_scale = 48000u;
+        memcpy(track->codec_name, "OPUS", 5u);
+        return 1;
+    }
+    if (packet_bytes >= 30u && packet[0] == 1u &&
+        memcmp(packet + 1u, "vorbis", 6u) == 0) {
+        if (read_le32(packet + 7u) != 0u || packet[12u] == 0u ||
+            packet[12u] > 32u)
+            return 0;
+        channels = packet[12u];
+        sample_rate = read_le32(packet + 13u);
+        if (sample_rate == 0u || sample_rate > 384000u ||
+            (packet[28u] >> 4u) < (packet[28u] & 0x0fu) ||
+            (packet[28u] & 0x0fu) < 4u || (packet[28u] >> 4u) > 13u ||
+            (packet[29u] & 1u) == 0u)
+            return 0;
+        track->codec_id = RIN_MEDIA_CODEC_VORBIS;
+        track->time_scale = sample_rate;
+        memcpy(track->codec_name, "VORBIS", 7u);
+        return 1;
+    }
+    return 0;
+}
+
+static int ogg_inspect(const uint8_t* data, size_t source_bytes,
+                       RinMediaDemuxInfoV1* output)
+{
+    uint8_t packet[64u] = {0};
+    RinMediaDemuxTrackV1 track;
+    OggPageView page;
+    size_t offset = 0u;
+    size_t packet_bytes = 0u;
+    uint64_t last_granule = UINT64_MAX;
+    uint32_t serial = 0u;
+    uint32_t expected_sequence = 0u;
+    uint32_t page_count = 0u;
+    int first_page = 1;
+    int first_packet_done = 0;
+    if (rin_media_container_probe(data, source_bytes, &serial) != 0 ||
+        serial != RIN_MEDIA_CONTAINER_OGG)
+        return RIN_MEDIA_DEMUX_INVALID;
+    while (offset < source_bytes) {
+        size_t body_offset;
+        size_t index;
+        if (page_count++ >= 4096u ||
+            !ogg_page(data, source_bytes, offset, &page))
+            return RIN_MEDIA_DEMUX_INVALID;
+        if (first_page) {
+            if ((page.header_type & 0x02u) == 0u ||
+                (page.header_type & 0x01u) != 0u || page.sequence != 0u)
+                return RIN_MEDIA_DEMUX_INVALID;
+            serial = page.serial;
+            expected_sequence = page.sequence;
+            first_page = 0;
+        } else if (page.serial != serial || page.sequence != expected_sequence) {
+            return RIN_MEDIA_DEMUX_UNSUPPORTED;
+        }
+        expected_sequence = page.sequence + 1u;
+        if (page.granule_position != UINT64_MAX)
+            last_granule = page.granule_position;
+        body_offset = page.payload;
+        for (index = 0u; index < page.segment_count; ++index) {
+            size_t segment_bytes = data[page.segment_table + index];
+            if (!first_packet_done) {
+                if (segment_bytes > sizeof(packet) - packet_bytes)
+                    return RIN_MEDIA_DEMUX_UNSUPPORTED;
+                memcpy(packet + packet_bytes, data + body_offset,
+                       segment_bytes);
+                packet_bytes += segment_bytes;
+            }
+            body_offset += segment_bytes;
+            if (segment_bytes < 255u && !first_packet_done) {
+                if (!ogg_fill_track(packet, packet_bytes,
+                                    last_granule == UINT64_MAX ? 0u :
+                                    last_granule, &track))
+                    return RIN_MEDIA_DEMUX_UNSUPPORTED;
+                first_packet_done = 1;
+            }
+        }
+        offset = page.end;
+    }
+    if (first_page || !first_packet_done) return RIN_MEDIA_DEMUX_UNSUPPORTED;
+    if (last_granule != UINT64_MAX) track.duration_ticks = last_granule;
+    output->tracks[0] = track;
+    output->track_count = 1u;
+    output->time_scale = track.time_scale;
+    output->duration_ticks = track.duration_ticks;
+    output->container_id = RIN_MEDIA_CONTAINER_OGG;
     return RIN_MEDIA_DEMUX_OK;
 }
 
@@ -950,6 +1116,8 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
         result = wav_inspect(data, source_bytes, output);
     else if (container == RIN_MEDIA_CONTAINER_FLAC)
         result = flac_inspect(data, source_bytes, output);
+    else if (container == RIN_MEDIA_CONTAINER_OGG)
+        result = ogg_inspect(data, source_bytes, output);
     else if (source_bytes >= 8u &&
         read_be32(data + 4u) == UINT32_C(0x66747970))
         result = mp4_inspect(data, source_bytes, output);

@@ -85,8 +85,9 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
  * bounded stbl sample tables; EBML supports fixed, Xiph, and EBML-laced
  * SimpleBlock entries; legacy AVI uses its bounded idx1 entries and WAV uses
  * bounded data blocks.  FLAC exposes bounded STREAMINFO metadata and CRC
- * checked frame extents; subframe decoding, packet copying, filesystem
- * access, and backend ownership remain outside this public contract. */
+ * checked frame extents; Ogg exposes bounded Opus/Vorbis identification
+ * metadata.  Subframe decoding, packet copying, filesystem access, and
+ * backend ownership remain outside this public contract. */
 int rin_media_container_index_packets(
     const uint8_t* data, size_t source_bytes,
     const RinMediaDemuxInfoV1* info, size_t info_size,

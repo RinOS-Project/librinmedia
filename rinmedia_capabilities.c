@@ -19,6 +19,26 @@ static uint32_t read_le32(const uint8_t* value)
            ((uint32_t)value[3] << 24u);
 }
 
+static int ogg_page_size(const uint8_t* data, size_t source_bytes,
+                         size_t* page_bytes)
+{
+    size_t segment_table;
+    size_t body_bytes = 0u;
+    size_t index;
+    if (!data || !page_bytes || source_bytes < 27u ||
+        memcmp(data, "OggS", 4u) != 0 || data[4] != 0u)
+        return 0;
+    segment_table = 27u + (size_t)data[26];
+    if (segment_table > source_bytes) return 0;
+    for (index = 0u; index < (size_t)data[26]; ++index) {
+        if ((size_t)data[27u + index] > source_bytes - segment_table - body_bytes)
+            return 0;
+        body_bytes += data[27u + index];
+    }
+    *page_bytes = segment_table + body_bytes;
+    return 1;
+}
+
 static int fourcc(const uint8_t* value, char a, char b, char c, char d)
 {
     return value[0] == (uint8_t)a && value[1] == (uint8_t)b &&
@@ -207,6 +227,12 @@ int rin_media_container_probe(const uint8_t* data, size_t source_bytes,
         return -1;
     if (source_bytes >= 4u && memcmp(data, "fLaC", 4u) == 0) {
         *container_id = RIN_MEDIA_CONTAINER_FLAC;
+        return 0;
+    }
+    if (source_bytes >= 4u && memcmp(data, "OggS", 4u) == 0) {
+        size_t page_bytes;
+        if (!ogg_page_size(data, source_bytes, &page_bytes)) return -1;
+        *container_id = RIN_MEDIA_CONTAINER_OGG;
         return 0;
     }
     if (source_bytes >= 12u && fourcc(data, 'R', 'I', 'F', 'F')) {

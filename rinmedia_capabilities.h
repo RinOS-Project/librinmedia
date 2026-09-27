@@ -20,7 +20,8 @@ enum {
     RIN_MEDIA_CONTAINER_MATROSKA = 3u,
     RIN_MEDIA_CONTAINER_AVI = 4u,
     RIN_MEDIA_CONTAINER_WAV = 5u,
-    RIN_MEDIA_CONTAINER_FLAC = 6u
+    RIN_MEDIA_CONTAINER_FLAC = 6u,
+    RIN_MEDIA_CONTAINER_OGG = 7u
 };
 
 enum {
@@ -31,6 +32,7 @@ enum {
     RIN_MEDIA_CODEC_OPUS = 5u,
     RIN_MEDIA_CODEC_AAC = 6u,
     RIN_MEDIA_CODEC_M4A = 7u,
+    RIN_MEDIA_CODEC_VORBIS = 8u,
 };
 
 typedef struct RinMediaCapabilityV1 {
