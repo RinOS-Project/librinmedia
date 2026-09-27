@@ -768,6 +768,108 @@ static int webm_track_number(const uint8_t* data, size_t length,
     return 1;
 }
 
+static int webm_lace_sizes(const uint8_t* data, size_t begin, size_t end,
+                           uint8_t flags, uint32_t* sizes,
+                           uint32_t* count, size_t* payload_begin)
+{
+    uint8_t lace_type = flags & 0x06u;
+    uint32_t index;
+    size_t cursor = begin;
+    size_t remaining;
+    if (!data || !sizes || !count || !payload_begin || begin > end)
+        return 0;
+    if (lace_type == 0u) {
+        if (end == begin || end - begin > UINT32_MAX) return 0;
+        *count = 1u;
+        sizes[0] = (uint32_t)(end - begin);
+        *payload_begin = begin;
+        return sizes[0] != 0u;
+    }
+    if (end - cursor < 1u) return 0;
+    *count = (uint32_t)data[cursor++] + 1u;
+    if (*count == 0u || *count > RIN_MEDIA_DEMUX_MAX_PACKETS)
+        return 0;
+    remaining = end - cursor;
+    if (lace_type == 0x04u) { /* fixed-size lacing */
+        if (remaining == 0u || remaining % *count != 0u ||
+            remaining / *count > UINT32_MAX)
+            return 0;
+        for (index = 0u; index < *count; ++index)
+            sizes[index] = (uint32_t)(remaining / *count);
+        *payload_begin = cursor;
+        return sizes[0] != 0u;
+    }
+    if (lace_type == 0x02u) { /* Xiph lacing */
+        for (index = 0u; index + 1u < *count; ++index) {
+            uint32_t size = 0u;
+            uint8_t part;
+            do {
+                if (cursor >= end) return 0;
+                part = data[cursor++];
+                if (size > UINT32_MAX - (uint32_t)part) return 0;
+                size += part;
+            } while (part == 0xffu);
+            if ((uint64_t)size > (uint64_t)(end - cursor)) return 0;
+            sizes[index] = size;
+            remaining = end - cursor - size;
+        }
+        if (remaining == 0u || remaining > UINT32_MAX) return 0;
+        sizes[*count - 1u] = (uint32_t)remaining;
+        *payload_begin = cursor;
+        for (index = 0u; index < *count; ++index)
+            if (sizes[index] == 0u) return 0;
+        return 1;
+    }
+    /* EBML lacing stores the first size as an unsigned vint and subsequent
+     * sizes as signed deltas with a vint-width-dependent bias. */
+    {
+        uint64_t previous;
+        uint64_t total = 0u;
+        uint64_t value;
+        size_t vint_bytes;
+        int unknown;
+        if (!ebml_vint(data + cursor, end - cursor, &value, &vint_bytes,
+                       &unknown) || unknown || value == 0u ||
+            value > UINT32_MAX)
+            return 0;
+        sizes[0] = (uint32_t)value;
+        previous = value;
+        total = value;
+        cursor += vint_bytes;
+        for (index = 1u; index + 1u < *count; ++index) {
+            uint64_t bias;
+            int64_t delta;
+            if (!ebml_vint(data + cursor, end - cursor, &value, &vint_bytes,
+                           &unknown) || unknown || vint_bytes > 8u)
+                return 0;
+            bias = (UINT64_C(1) << (7u * vint_bytes - 1u)) - 1u;
+            delta = value >= bias ? (int64_t)(value - bias) :
+                                    -(int64_t)(bias - value);
+            if (delta < 0) {
+                if ((uint64_t)(-delta) > previous) return 0;
+                previous -= (uint64_t)(-delta);
+            } else {
+                if (UINT64_MAX - previous < (uint64_t)delta) return 0;
+                previous += (uint64_t)delta;
+            }
+            cursor += vint_bytes;
+            if (previous == 0u || previous > UINT32_MAX ||
+                UINT64_MAX - total < previous)
+                return 0;
+            total += previous;
+            sizes[index] = (uint32_t)previous;
+        }
+        if (cursor >= end || total >= (uint64_t)(end - cursor) ||
+            end - cursor - (size_t)total > UINT32_MAX)
+            return 0;
+        sizes[*count - 1u] = (uint32_t)((end - cursor) - (size_t)total);
+        *payload_begin = cursor;
+        for (index = 0u; index < *count; ++index)
+            if (sizes[index] == 0u) return 0;
+        return 1;
+    }
+}
+
 static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
                               const RinMediaDemuxInfoV1* info,
                               RinMediaDemuxPacketTableV1* output)
@@ -791,7 +893,10 @@ static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
             size_t track_bytes;
             int16_t relative;
             uint8_t flags;
-            RinMediaDemuxPacketV1 packet;
+            uint32_t lace_sizes[RIN_MEDIA_DEMUX_MAX_PACKETS];
+            uint32_t lace_count;
+            size_t packet_data;
+            uint32_t lace_index;
             if (!have_timecode || element_end - payload < 4u ||
                 !webm_track_number(data + payload, element_end - payload,
                                     &track_id, &track_bytes) ||
@@ -800,27 +905,33 @@ static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
             relative = (int16_t)(((uint16_t)data[payload + track_bytes] << 8u) |
                                  data[payload + track_bytes + 1u]);
             flags = data[payload + track_bytes + 2u];
-            if ((flags & 0x06u) != 0u) return 0; /* lacing is not indexed */
-            if (media_track_index(info, track_id) < 0 ||
-                output->packet_count >= RIN_MEDIA_DEMUX_MAX_PACKETS)
+            if (!webm_lace_sizes(data, payload + track_bytes + 3u, element_end,
+                                 flags, lace_sizes, &lace_count, &packet_data))
+                return 0;
+            if (media_track_index(info, track_id) < 0 || lace_count >
+                RIN_MEDIA_DEMUX_MAX_PACKETS - output->packet_count)
                 return 0;
             if (relative < 0 && (uint64_t)(-(int64_t)relative) > cluster_timecode)
                 return 0;
-            memset(&packet, 0, sizeof(packet));
-            packet.byte_offset = payload + track_bytes + 3u;
-            packet.byte_size = (uint32_t)(element_end - packet.byte_offset);
-            packet.track_id = track_id;
             if (relative >= 0 &&
                 UINT64_MAX - cluster_timecode < (uint64_t)relative)
                 return 0;
-            packet.timestamp_ticks = relative < 0 ?
-                cluster_timecode - (uint64_t)(-(int64_t)relative) :
-                cluster_timecode + (uint64_t)relative;
-            packet.flags = (flags & 0x80u) != 0u ?
-                RIN_MEDIA_DEMUX_PACKET_KEYFRAME : 0u;
-            if (packet.byte_size == 0u || packet.byte_size > 1024u * 1024u)
-                return 0;
-            output->packets[output->packet_count++] = packet;
+            for (lace_index = 0u; lace_index < lace_count; ++lace_index) {
+                RinMediaDemuxPacketV1 packet;
+                memset(&packet, 0, sizeof(packet));
+                packet.byte_offset = packet_data;
+                packet.byte_size = lace_sizes[lace_index];
+                packet.track_id = track_id;
+                packet.timestamp_ticks = relative < 0 ?
+                    cluster_timecode - (uint64_t)(-(int64_t)relative) :
+                    cluster_timecode + (uint64_t)relative;
+                packet.flags = (flags & 0x80u) != 0u ?
+                    RIN_MEDIA_DEMUX_PACKET_KEYFRAME : 0u;
+                if (packet.byte_size == 0u || packet.byte_size > 1024u * 1024u)
+                    return 0;
+                output->packets[output->packet_count++] = packet;
+                packet_data += packet.byte_size;
+            }
         }
         offset = element_end;
     }
