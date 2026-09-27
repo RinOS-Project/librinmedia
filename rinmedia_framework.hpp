@@ -20,6 +20,7 @@ enum class MediaContainer : uint32_t {
     Matroska = 3u,
     Avi = 4u,
     Wav = 5u,
+    Flac = 6u,
 };
 
 enum class MediaTrackKind : uint32_t {
