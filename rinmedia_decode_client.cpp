@@ -8,6 +8,7 @@
 #include "../libc/sys/socket.h"
 #include "../libc/sys/un.h"
 #include "../libc/unistd.h"
+#include "../../RinOS-SDK/include/rin/service.h"
 #include "../../RinOS-SDK/include/rin/socket_abi.h"
 
 namespace RinMedia {
@@ -17,10 +18,8 @@ constexpr uint32_t kIoPollMs = 1000u;
 constexpr uint32_t kIoIdleLimit = 5u;
 constexpr uint32_t kAutostartRetryMs = 25u;
 constexpr uint32_t kAutostartBudgetMs = 500u;
-constexpr int kSystemServiceScope = 1;
 constexpr uint32_t kMaxPollEintr = 32u;
 
-extern "C" int rin_service_start(int scope, const char* id);
 extern "C" void rin_sleep(unsigned int milliseconds);
 
 bool pollCancelled(RinRuntimeCancellationFunction cancellation,
@@ -96,7 +95,8 @@ int connectWithAutostart(RinRuntimeCancellationFunction cancellation,
     int fd = connectOnce(cancellation, cancellationContext, cancelled);
     if (fd >= 0) return fd;
     if (pollCancelled(cancellation, cancellationContext, cancelled)) return -1;
-    const int start = rin_service_start(kSystemServiceScope, "mediad");
+    const RinResult start = rin_service_start(RIN_SERVICE_SCOPE_SYSTEM,
+                                              "mediad");
     if (start == -EPERM || start == -ENOENT || start == -ENOSYS) return -1;
     for (uint32_t waited = 0u; waited < kAutostartBudgetMs;
          waited += kAutostartRetryMs) {
