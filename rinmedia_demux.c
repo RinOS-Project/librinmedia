@@ -449,7 +449,7 @@ static int flac_inspect(const uint8_t* data, size_t source_bytes,
             break;
         }
     }
-    if (!found_streaminfo || !found_last || offset != source_bytes)
+    if (!found_streaminfo || !found_last)
         return RIN_MEDIA_DEMUX_INVALID;
     memset(&output->tracks[0], 0, sizeof(output->tracks[0]));
     output->tracks[0].track_id = 1u;
@@ -463,6 +463,265 @@ static int flac_inspect(const uint8_t* data, size_t source_bytes,
     output->duration_ticks = total_samples;
     output->container_id = RIN_MEDIA_CONTAINER_FLAC;
     return RIN_MEDIA_DEMUX_OK;
+}
+
+typedef struct FlacFrameHeader {
+    size_t header_end;
+    uint32_t block_samples;
+    uint64_t number;
+    int variable_blocking;
+} FlacFrameHeader;
+
+static uint8_t flac_crc8(const uint8_t* data, size_t length)
+{
+    uint8_t crc = 0u;
+    size_t index;
+    for (index = 0u; index < length; ++index) {
+        uint8_t bit;
+        crc ^= data[index];
+        for (bit = 0u; bit < 8u; ++bit)
+            crc = (crc & 0x80u) != 0u ?
+                (uint8_t)((crc << 1u) ^ 0x07u) :
+                (uint8_t)(crc << 1u);
+    }
+    return crc;
+}
+
+static uint16_t flac_crc16(const uint8_t* data, size_t length)
+{
+    uint16_t crc = 0u;
+    size_t index;
+    for (index = 0u; index < length; ++index) {
+        uint8_t bit;
+        crc ^= (uint16_t)data[index] << 8u;
+        for (bit = 0u; bit < 8u; ++bit)
+            crc = (crc & UINT16_C(0x8000)) != 0u ?
+                (uint16_t)((crc << 1u) ^ UINT16_C(0x8005)) :
+                (uint16_t)(crc << 1u);
+    }
+    return crc;
+}
+
+static int flac_utf8_number(const uint8_t* data, size_t length,
+                            uint64_t* value, size_t* consumed)
+{
+    uint8_t first;
+    uint64_t result;
+    uint64_t minimum;
+    size_t count;
+    size_t index;
+    if (!data || !value || !consumed || length == 0u) return 0;
+    first = data[0];
+    if ((first & 0x80u) == 0u) {
+        count = 1u;
+        result = first;
+        minimum = 0u;
+    } else if (first >= 0xc2u && first <= 0xdfu) {
+        count = 2u;
+        result = first & 0x1fu;
+        minimum = UINT64_C(0x80);
+    } else if (first >= 0xe0u && first <= 0xefu) {
+        count = 3u;
+        result = first & 0x0fu;
+        minimum = UINT64_C(0x800);
+    } else if (first >= 0xf0u && first <= 0xf7u) {
+        count = 4u;
+        result = first & 0x07u;
+        minimum = UINT64_C(0x10000);
+    } else if (first >= 0xf8u && first <= 0xfbu) {
+        count = 5u;
+        result = first & 0x03u;
+        minimum = UINT64_C(0x200000);
+    } else if (first >= 0xfcu && first <= 0xfdu) {
+        count = 6u;
+        result = first & 0x01u;
+        minimum = UINT64_C(0x4000000);
+    } else {
+        return 0;
+    }
+    if (length < count) return 0;
+    for (index = 1u; index < count; ++index) {
+        if ((data[index] & 0xc0u) != 0x80u) return 0;
+        result = (result << 6u) | (uint64_t)(data[index] & 0x3fu);
+    }
+    if (result < minimum) return 0;
+    *value = result;
+    *consumed = count;
+    return 1;
+}
+
+static int flac_frame_header(const uint8_t* data, size_t source_bytes,
+                             size_t start, FlacFrameHeader* output)
+{
+    uint8_t block_code;
+    uint8_t sample_rate_code;
+    uint8_t channel_assignment;
+    uint8_t sample_size_code;
+    size_t offset;
+    size_t number_bytes;
+    uint64_t number;
+    uint32_t block_samples;
+    if (!data || !output || start > source_bytes ||
+        source_bytes - start < 6u || data[start] != 0xffu ||
+        (data[start + 1u] & 0xfeu) != 0xf8u ||
+        (data[start + 3u] & 0x01u) != 0u)
+        return 0;
+    block_code = (uint8_t)(data[start + 2u] >> 4u);
+    sample_rate_code = (uint8_t)(data[start + 2u] & 0x0fu);
+    channel_assignment = (uint8_t)(data[start + 3u] >> 4u);
+    sample_size_code = (uint8_t)((data[start + 3u] >> 1u) & 0x07u);
+    if (block_code == 0u || sample_rate_code == 15u ||
+        channel_assignment > 8u || sample_size_code == 3u)
+        return 0;
+    offset = start + 4u;
+    if (!flac_utf8_number(data + offset, source_bytes - offset, &number,
+                          &number_bytes))
+        return 0;
+    offset += number_bytes;
+    switch (block_code) {
+    case 1u: block_samples = 192u; break;
+    case 2u: block_samples = 576u; break;
+    case 3u: block_samples = 1152u; break;
+    case 4u: block_samples = 2304u; break;
+    case 5u: block_samples = 4608u; break;
+    case 6u:
+        if (source_bytes - offset < 1u) return 0;
+        block_samples = (uint32_t)data[offset++] + 1u;
+        break;
+    case 7u:
+        if (source_bytes - offset < 2u) return 0;
+        block_samples = ((uint32_t)data[offset] << 8u) |
+                        (uint32_t)data[offset + 1u];
+        block_samples += 1u;
+        offset += 2u;
+        break;
+    default:
+        block_samples = UINT32_C(256) << (block_code - 8u);
+        break;
+    }
+    switch (sample_rate_code) {
+    case 12u:
+        if (source_bytes - offset < 1u) return 0;
+        ++offset;
+        break;
+    case 13u:
+    case 14u:
+        if (source_bytes - offset < 2u) return 0;
+        offset += 2u;
+        break;
+    default:
+        break;
+    }
+    if (source_bytes - offset < 1u ||
+        flac_crc8(data + start, offset - start) != data[offset])
+        return 0;
+    output->header_end = offset + 1u;
+    output->block_samples = block_samples;
+    output->number = number;
+    output->variable_blocking = (int)(data[start + 1u] & 0x01u);
+    return 1;
+}
+
+static int flac_frame_crc_ok(const uint8_t* data, size_t source_bytes,
+                             size_t start, size_t end)
+{
+    uint16_t stored;
+    if (!data || start > end || end > source_bytes || end - start < 3u ||
+        end - start > 1024u * 1024u)
+        return 0;
+    stored = (uint16_t)(((uint16_t)data[end - 2u] << 8u) |
+                        data[end - 1u]);
+    return flac_crc16(data + start, end - start - 2u) == stored;
+}
+
+static int flac_frame_end(const uint8_t* data, size_t source_bytes,
+                          size_t start, size_t header_end, size_t* end)
+{
+    size_t candidate;
+    size_t limit;
+    if (!data || !end || start > source_bytes || header_end < start ||
+        header_end > source_bytes || source_bytes - start < 3u)
+        return 0;
+    limit = source_bytes - start > 1024u * 1024u ?
+        start + 1024u * 1024u : source_bytes;
+    if (header_end > limit || limit - header_end < 2u) return 0;
+    for (candidate = header_end + 2u; candidate + 3u <= limit; ++candidate) {
+        FlacFrameHeader next;
+        if (!flac_frame_header(data, source_bytes, candidate, &next)) continue;
+        if (flac_frame_crc_ok(data, source_bytes, start, candidate)) {
+            *end = candidate;
+            return 1;
+        }
+    }
+    if (limit == source_bytes &&
+        flac_frame_crc_ok(data, source_bytes, start, source_bytes)) {
+        *end = source_bytes;
+        return 1;
+    }
+    return 0;
+}
+
+static int flac_index_packets(const uint8_t* data, size_t source_bytes,
+                              const RinMediaDemuxInfoV1* info,
+                              RinMediaDemuxPacketTableV1* output)
+{
+    RinMediaDemuxInfoV1 verified;
+    size_t offset = 4u;
+    uint64_t timestamp = 0u;
+    if (!data || !info || !output || info->container_id !=
+        RIN_MEDIA_CONTAINER_FLAC || info->track_count != 1u ||
+        rin_media_container_inspect(data, source_bytes, &verified,
+                                    sizeof(verified)) != RIN_MEDIA_DEMUX_OK)
+        return 0;
+    while (offset < source_bytes) {
+        uint8_t header;
+        uint32_t block_size;
+        if (source_bytes - offset < 4u) return 0;
+        header = data[offset];
+        block_size = ((uint32_t)data[offset + 1u] << 16u) |
+                     ((uint32_t)data[offset + 2u] << 8u) |
+                     data[offset + 3u];
+        offset += 4u;
+        if (block_size > source_bytes - offset) return 0;
+        offset += block_size;
+        if ((header & 0x80u) != 0u) break;
+    }
+    if (offset >= source_bytes) return 0;
+    while (offset < source_bytes) {
+        FlacFrameHeader frame;
+        size_t end;
+        RinMediaDemuxPacketV1 packet;
+        if (output->packet_count >= RIN_MEDIA_DEMUX_MAX_PACKETS ||
+            !flac_frame_header(data, source_bytes, offset, &frame) ||
+            !flac_frame_end(data, source_bytes, offset, frame.header_end,
+                            &end) || end <= offset || end - offset >
+                1024u * 1024u || frame.block_samples == 0u)
+            return 0;
+        if (frame.variable_blocking) {
+            timestamp = frame.number;
+        } else if (UINT64_MAX - timestamp < frame.block_samples) {
+            return 0;
+        }
+        memset(&packet, 0, sizeof(packet));
+        packet.byte_offset = offset;
+        packet.byte_size = (uint32_t)(end - offset);
+        packet.track_id = 1u;
+        packet.timestamp_ticks = frame.variable_blocking ? frame.number :
+                                 timestamp;
+        packet.duration_ticks = frame.block_samples;
+        packet.flags = RIN_MEDIA_DEMUX_PACKET_KEYFRAME;
+        output->packets[output->packet_count++] = packet;
+        if (frame.variable_blocking) {
+            if (UINT64_MAX - frame.number < frame.block_samples) return 0;
+            timestamp = frame.number + frame.block_samples;
+        } else {
+            timestamp += frame.block_samples;
+        }
+        offset = end;
+    }
+    return output->packet_count != 0u &&
+           (verified.duration_ticks == 0u ||
+            timestamp == verified.duration_ticks);
 }
 
 static int ebml_vint(const uint8_t* data, size_t length, uint64_t* value,
@@ -1371,7 +1630,8 @@ int rin_media_container_index_packets(
         info->container_id != RIN_MEDIA_CONTAINER_WEBM &&
         info->container_id != RIN_MEDIA_CONTAINER_MATROSKA &&
         info->container_id != RIN_MEDIA_CONTAINER_AVI &&
-        info->container_id != RIN_MEDIA_CONTAINER_WAV)
+        info->container_id != RIN_MEDIA_CONTAINER_WAV &&
+        info->container_id != RIN_MEDIA_CONTAINER_FLAC)
         return RIN_MEDIA_DEMUX_UNSUPPORTED;
     output->struct_size = sizeof(*output);
     output->abi_version = RIN_MEDIA_DEMUX_ABI_V1;
@@ -1381,6 +1641,8 @@ int rin_media_container_index_packets(
         avi_index_packets(data, source_bytes, info, output) :
         info->container_id == RIN_MEDIA_CONTAINER_WAV ?
         wav_index_packets(data, source_bytes, info, output) :
+        info->container_id == RIN_MEDIA_CONTAINER_FLAC ?
+        flac_index_packets(data, source_bytes, info, output) :
         webm_index_packets(data, source_bytes, info, output);
     if (!result || output->packet_count == 0u) {
         memset(output, 0, sizeof(*output));
