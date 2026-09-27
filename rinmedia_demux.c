@@ -2,6 +2,7 @@
 
 #include "rinmedia_demux.h"
 #include "rinavi.h"
+#include "rinwav.h"
 
 #include <string.h>
 
@@ -106,6 +107,40 @@ static int avi_fill_track(const RAviStream* stream,
                         track->codec_name) :
         avi_audio_codec(stream->audio.format, &track->codec_id,
                         track->codec_name);
+}
+
+static int wav_fill_codec(uint16_t format, uint32_t* codec_id,
+                          char* codec_name)
+{
+    const char* name;
+    if (!codec_id || !codec_name || format == 0u) return 0;
+    switch (format) {
+    case RWAV_FORMAT_PCM: name = "PCM "; break;
+    case RWAV_FORMAT_IEEE_FLOAT: name = "FL32"; break;
+    case RWAV_FORMAT_ALAW: name = "ALAW"; break;
+    case RWAV_FORMAT_MULAW: name = "ULAW"; break;
+    case RWAV_FORMAT_IMA_ADPCM: name = "IMAD"; break;
+    default: name = "WAVE"; break;
+    }
+    memcpy(codec_name, name, 4u);
+    codec_name[4] = '\0';
+    *codec_id = (uint32_t)format;
+    return 1;
+}
+
+static int wav_fill_track(const RWavContext* context, uint32_t total_samples,
+                          RinMediaDemuxTrackV1* track)
+{
+    if (!context || !track || context->sample_rate == 0u ||
+        context->channels == 0u || context->channels > 2u)
+        return 0;
+    memset(track, 0, sizeof(*track));
+    track->track_id = 1u;
+    track->kind = RIN_MEDIA_DEMUX_TRACK_AUDIO;
+    track->time_scale = context->sample_rate;
+    track->duration_ticks = total_samples;
+    return wav_fill_codec(context->format, &track->codec_id,
+                          track->codec_name);
 }
 
 static uint32_t fourcc_value(const uint8_t* value)
@@ -318,6 +353,30 @@ static int avi_inspect(const uint8_t* data, size_t source_bytes,
         output->tracks[output->track_count++] = track;
     }
     output->container_id = RIN_MEDIA_CONTAINER_AVI;
+    return RIN_MEDIA_DEMUX_OK;
+}
+
+static int wav_inspect(const uint8_t* data, size_t source_bytes,
+                       RinMediaDemuxInfoV1* output)
+{
+    RWavContext context;
+    uint32_t container = 0u;
+    uint32_t total_samples = 0u;
+    int result;
+    if (rin_media_container_probe(data, source_bytes, &container) != 0 ||
+        container != RIN_MEDIA_CONTAINER_WAV)
+        return RIN_MEDIA_DEMUX_INVALID;
+    result = rwav_open(&context, data, source_bytes);
+    if (result != RWAV_OK ||
+        rwav_get_info(&context, 0, 0, 0, &total_samples) != RWAV_OK)
+        return result == RWAV_DATA_ERROR ? RIN_MEDIA_DEMUX_INVALID :
+               RIN_MEDIA_DEMUX_UNSUPPORTED;
+    if (!wav_fill_track(&context, total_samples, &output->tracks[0]))
+        return RIN_MEDIA_DEMUX_UNSUPPORTED;
+    output->track_count = 1u;
+    output->time_scale = output->tracks[0].time_scale;
+    output->duration_ticks = output->tracks[0].duration_ticks;
+    output->container_id = RIN_MEDIA_CONTAINER_WAV;
     return RIN_MEDIA_DEMUX_OK;
 }
 
@@ -541,6 +600,8 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
     if (rin_media_container_probe(data, source_bytes, &container) == 0 &&
         container == RIN_MEDIA_CONTAINER_AVI)
         result = avi_inspect(data, source_bytes, output);
+    else if (container == RIN_MEDIA_CONTAINER_WAV)
+        result = wav_inspect(data, source_bytes, output);
     else if (source_bytes >= 8u &&
         read_be32(data + 4u) == UINT32_C(0x66747970))
         result = mp4_inspect(data, source_bytes, output);
@@ -883,6 +944,54 @@ static int avi_index_packets(const uint8_t* data, size_t source_bytes,
     return output->packet_count != 0u;
 }
 
+static int wav_index_packets(const uint8_t* data, size_t source_bytes,
+                             const RinMediaDemuxInfoV1* info,
+                             RinMediaDemuxPacketTableV1* output)
+{
+    RWavContext context;
+    uint32_t container = 0u;
+    size_t block_count;
+    size_t index;
+    uint32_t samples_per_block = 1u;
+    uint64_t timestamp = 0u;
+    if (rin_media_container_probe(data, source_bytes, &container) != 0 ||
+        container != RIN_MEDIA_CONTAINER_WAV ||
+        rwav_open(&context, data, source_bytes) != RWAV_OK ||
+        media_track_index(info, 1u) < 0 || context.data_offset > source_bytes ||
+        context.data_size > source_bytes - context.data_offset ||
+        context.block_align == 0u ||
+        context.data_size % context.block_align != 0u)
+        return 0;
+    if (context.format == RWAV_FORMAT_IMA_ADPCM) {
+        size_t channels = context.channels;
+        size_t payload_bytes;
+        if (channels == 0u || context.block_align < channels * 4u)
+            return 0;
+        payload_bytes = (size_t)context.block_align - channels * 4u;
+        samples_per_block = (uint32_t)(payload_bytes * 2u / channels + 1u);
+        if (samples_per_block == 0u)
+            return 0;
+    }
+    block_count = context.data_size / context.block_align;
+    if (block_count == 0u || block_count > RIN_MEDIA_DEMUX_MAX_PACKETS)
+        return 0;
+    for (index = 0u; index < block_count; ++index) {
+        RinMediaDemuxPacketV1 packet;
+        if (UINT64_MAX - timestamp < samples_per_block)
+            return 0;
+        memset(&packet, 0, sizeof(packet));
+        packet.byte_offset = (uint64_t)context.data_offset +
+                             (uint64_t)index * context.block_align;
+        packet.byte_size = context.block_align;
+        packet.track_id = 1u;
+        packet.timestamp_ticks = timestamp;
+        packet.duration_ticks = samples_per_block;
+        output->packets[output->packet_count++] = packet;
+        timestamp += samples_per_block;
+    }
+    return output->packet_count != 0u;
+}
+
 static int mp4_index_packets(const uint8_t* data, size_t source_bytes,
                              const RinMediaDemuxInfoV1* info,
                              RinMediaDemuxPacketTableV1* output)
@@ -1174,7 +1283,8 @@ int rin_media_container_index_packets(
     if (info->container_id != RIN_MEDIA_CONTAINER_MP4 &&
         info->container_id != RIN_MEDIA_CONTAINER_WEBM &&
         info->container_id != RIN_MEDIA_CONTAINER_MATROSKA &&
-        info->container_id != RIN_MEDIA_CONTAINER_AVI)
+        info->container_id != RIN_MEDIA_CONTAINER_AVI &&
+        info->container_id != RIN_MEDIA_CONTAINER_WAV)
         return RIN_MEDIA_DEMUX_UNSUPPORTED;
     output->struct_size = sizeof(*output);
     output->abi_version = RIN_MEDIA_DEMUX_ABI_V1;
@@ -1182,6 +1292,8 @@ int rin_media_container_index_packets(
         mp4_index_packets(data, source_bytes, info, output) :
         info->container_id == RIN_MEDIA_CONTAINER_AVI ?
         avi_index_packets(data, source_bytes, info, output) :
+        info->container_id == RIN_MEDIA_CONTAINER_WAV ?
+        wav_index_packets(data, source_bytes, info, output) :
         webm_index_packets(data, source_bytes, info, output);
     if (!result || output->packet_count == 0u) {
         memset(output, 0, sizeof(*output));
