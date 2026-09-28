@@ -618,9 +618,9 @@ static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
     uint32_t frame_code;
     uint32_t frame_count;
     if (!packet || !duration_ticks || packet_bytes < 2u ||
-        (packet[0] & 0x3fu) != 0u)
+        (packet[0] >> 3u) != 0u || (packet[0] & 0x04u) != 0u)
         return 0;
-    frame_code = (uint32_t)(packet[0] >> 6u);
+    frame_code = (uint32_t)(packet[0] & 0x03u);
     if (frame_code == 0u) {
         if (packet_bytes - 1u > max_frame_bytes)
             return 0;
