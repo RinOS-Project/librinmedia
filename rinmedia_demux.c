@@ -247,6 +247,20 @@ static int mp4_sample_entry(const uint8_t* data, size_t length,
     return 1;
 }
 
+static int mp4_box_is_container(uint32_t type)
+{
+    switch (type) {
+    case UINT32_C(0x65647473): /* edts */
+    case UINT32_C(0x6d646961): /* mdia */
+    case UINT32_C(0x6d696e66): /* minf */
+    case UINT32_C(0x64696e66): /* dinf */
+    case UINT32_C(0x7374626c): /* stbl */
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 static int mp4_find_track_fields(const uint8_t* data, size_t begin, size_t end,
                                  RinMediaDemuxTrackV1* track, int depth)
 {
@@ -274,11 +288,10 @@ static int mp4_find_track_fields(const uint8_t* data, size_t begin, size_t end,
                 !mp4_sample_entry(payload + 8u, length - 8u,
                                   &track->codec_id, track->codec_name))
                 return 0;
-        } else if (!mp4_find_track_fields(data, box.payload, box.end, track,
+        } else if (mp4_box_is_container(box.type) &&
+                   !mp4_find_track_fields(data, box.payload, box.end, track,
                                           depth + 1)) {
-            /* Unknown leaf payloads are not containers.  Only reject a
-             * malformed box when it advertises a non-empty nested payload. */
-            if (box.payload != box.end && depth < 3) return 0;
+            return 0;
         }
         offset = box.end;
     }
