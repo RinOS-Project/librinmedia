@@ -612,12 +612,22 @@ static int ogg_inspect(const uint8_t* data, size_t source_bytes,
 static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
                                     uint32_t* duration_ticks)
 {
+    uint32_t frame_code;
     uint32_t frame_count;
     if (!packet || !duration_ticks || packet_bytes < 2u ||
         (packet[0] & 0x3fu) != 0u)
         return 0;
-    frame_count = (uint32_t)(packet[0] >> 6u) == 0u ? 1u :
-                  (uint32_t)(packet[0] >> 6u) == 1u ? 2u : 0u;
+    frame_code = (uint32_t)(packet[0] >> 6u);
+    if (frame_code == 0u) {
+        frame_count = 1u;
+    } else if (frame_code == 1u) {
+        /* C=1 stores two equal-sized frames after the TOC byte. */
+        if (packet_bytes < 3u || ((packet_bytes - 1u) & 1u) != 0u)
+            return 0;
+        frame_count = 2u;
+    } else {
+        frame_count = 0u;
+    }
     if (frame_count == 0u || packet_bytes < 1u + frame_count)
         return 0;
     *duration_ticks = frame_count * 480u;
