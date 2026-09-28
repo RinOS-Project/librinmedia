@@ -272,35 +272,44 @@ static int mp4_box_is_container(uint32_t type)
 }
 
 static int mp4_find_track_fields(const uint8_t* data, size_t begin, size_t end,
-                                 RinMediaDemuxTrackV1* track, int depth)
+                                 RinMediaDemuxTrackV1* track, int depth,
+                                 uint32_t* seen_fields)
 {
     size_t offset = begin;
-    if (!data || !track || depth > 8) return 0;
+    if (!data || !track || !seen_fields || depth > 8) return 0;
     while (offset < end) {
         BoxView box;
         if (!iso_box(data, end, offset, &box)) return 0;
         if (box.type == UINT32_C(0x746b6864)) { /* tkhd */
+            if ((*seen_fields & UINT32_C(0x01)) != 0u) return 0;
+            *seen_fields |= UINT32_C(0x01);
             track->track_id = mp4_track_id(data + box.payload,
                                            box.end - box.payload);
         } else if (box.type == UINT32_C(0x6d646864)) { /* mdhd */
+            if ((*seen_fields & UINT32_C(0x02)) != 0u) return 0;
+            *seen_fields |= UINT32_C(0x02);
             if (!mp4_media_header(data + box.payload, box.end - box.payload,
                                   &track->time_scale,
                                   &track->duration_ticks))
                 return 0;
         } else if (box.type == UINT32_C(0x68646c72)) { /* hdlr */
+            if ((*seen_fields & UINT32_C(0x04)) != 0u) return 0;
+            *seen_fields |= UINT32_C(0x04);
             if (!mp4_handler_kind(data + box.payload, box.end - box.payload,
                                   &track->kind))
                 return 0;
         } else if (box.type == UINT32_C(0x73747364)) { /* stsd */
             const uint8_t* payload = data + box.payload;
             size_t length = box.end - box.payload;
+            if ((*seen_fields & UINT32_C(0x08)) != 0u) return 0;
+            *seen_fields |= UINT32_C(0x08);
             if (length < 16u || read_be32(payload + 4u) == 0u ||
                 !mp4_sample_entry(payload + 8u, length - 8u,
                                   &track->codec_id, track->codec_name))
                 return 0;
         } else if (mp4_box_is_container(box.type) &&
                    !mp4_find_track_fields(data, box.payload, box.end, track,
-                                          depth + 1)) {
+                                          depth + 1, seen_fields)) {
             return 0;
         }
         offset = box.end;
@@ -327,6 +336,7 @@ static int mp4_inspect(const uint8_t* data, size_t source_bytes,
             while (child < box.end) {
                 BoxView trak_box;
                 RinMediaDemuxTrackV1 track;
+                uint32_t seen_fields = 0u;
                 if (!iso_box(data, box.end, child, &trak_box))
                     return RIN_MEDIA_DEMUX_INVALID;
                 if (trak_box.type == UINT32_C(0x7472616b)) { /* trak */
@@ -334,7 +344,9 @@ static int mp4_inspect(const uint8_t* data, size_t source_bytes,
                         return RIN_MEDIA_DEMUX_UNSUPPORTED;
                     memset(&track, 0, sizeof(track));
                     if (!mp4_find_track_fields(data, trak_box.payload,
-                                               trak_box.end, &track, 0) ||
+                                               trak_box.end, &track, 0,
+                                               &seen_fields) ||
+                        seen_fields != UINT32_C(0x0f) ||
                         track.track_id == 0u || track.kind == 0u ||
                         track.codec_id == 0u || track.time_scale == 0u ||
                         mp4_track_id_exists(output, track.track_id))
@@ -1967,12 +1979,15 @@ static int mp4_index_packets(const uint8_t* data, size_t source_bytes,
             while (child < box.end) {
                 BoxView track_box;
                 RinMediaDemuxTrackV1 track;
+                uint32_t seen_fields = 0u;
                 Mp4SampleTables tables;
                 if (!iso_box(data, box.end, child, &track_box)) return 0;
                 if (track_box.type == UINT32_C(0x7472616b)) {
                     memset(&track, 0, sizeof(track));
                     if (!mp4_find_track_fields(data, track_box.payload,
-                                               track_box.end, &track, 0))
+                                               track_box.end, &track, 0,
+                                               &seen_fields) ||
+                        seen_fields != UINT32_C(0x0f))
                         return 0;
                     if (media_track_index(info, track.track_id) < 0)
                         return 0;
