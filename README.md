@@ -33,6 +33,11 @@ decorrelation (including arithmetic right-shift semantics for negative odd
 side samples), and clears the output before publishing any failure. Frames,
 scratch, and output remain caller-owned.
 
+The legacy `rinwav.h` S16 reader sign-extends 24-bit PCM before its bounded
+8-bit downshift and rejects non-finite IEEE float samples before conversion;
+the latter clears the requested output span and leaves the read position
+unchanged on failure.
+
 The EBML demux accepts unknown-size only for the bounded Segment/Cluster
 masters used by the packet path. TrackEntry, Info, Timecode, and SimpleBlock
 elements must carry a finite size; an unknown-size leaf is rejected before

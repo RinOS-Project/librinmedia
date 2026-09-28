@@ -209,6 +209,37 @@ static inline float rwav_read_le_float(const uint8_t* bytes)
     return decoded.value;
 }
 
+static inline int rwav_float_bits_finite(uint32_t bits)
+{
+    return (bits & UINT32_C(0x7f800000)) != UINT32_C(0x7f800000);
+}
+
+static inline int16_t rwav_pcm24_to_s16(const uint8_t* bytes)
+{
+    uint32_t raw = (uint32_t)bytes[0] |
+                   ((uint32_t)bytes[1] << 8u) |
+                   ((uint32_t)bytes[2] << 16u);
+    int32_t sample;
+    int32_t magnitude;
+    if ((raw & UINT32_C(0x00800000)) != 0u)
+        sample = (int32_t)(raw | UINT32_C(0xff000000));
+    else
+        sample = (int32_t)raw;
+    /* Convert signed 24-bit PCM to signed 16-bit using the arithmetic
+     * right-shift result, including the floor direction for negative values.
+     * The 24-bit range makes the magnitude operation safe. */
+    if (sample >= 0) return (int16_t)(sample / 256);
+    magnitude = -sample;
+    return (int16_t)-((magnitude + 255) / 256);
+}
+
+static inline void rwav_clear_samples(int16_t* output, size_t count)
+{
+    size_t index;
+    if (output == NULL) return;
+    for (index = 0u; index < count; ++index) output[index] = 0;
+}
+
 static inline int rwav_checked_sample_count(size_t samples,
                                              uint16_t channels,
                                              size_t* count_out)
@@ -478,7 +509,7 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
             samples_read = bytes / ctx->channels;
 
         } else if (ctx->bits_per_sample == 24) {
-            /* 24bit PCM: 上位16bitを取得 */
+            /* 24bit PCM: signed sampleをarithmetic right shiftで16bit化 */
             size_t bytes;
             if (!rwav_checked_sample_bytes(num_samples, ctx->channels, 3u,
                                            &bytes))
@@ -487,7 +518,7 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
             size_t count = bytes / 3;
 
             for (size_t i = 0; i < count; i++) {
-                output[i] = (int16_t)((src[i * 3 + 1]) | (src[i * 3 + 2] << 8));
+                output[i] = rwav_pcm24_to_s16(src + i * 3u);
             }
             ctx->read_pos += bytes;
             samples_read = count / ctx->channels;
@@ -518,6 +549,12 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
         if (bytes > remaining) bytes = remaining;
         size_t count = bytes / 4;
 
+        for (size_t i = 0; i < count; i++) {
+            if (!rwav_float_bits_finite(rwav_read_le32(src + i * 4u))) {
+                rwav_clear_samples(output, num_samples * (size_t)ctx->channels);
+                return RWAV_DATA_ERROR;
+            }
+        }
         for (size_t i = 0; i < count; i++) {
             float f = rwav_read_le_float(src + i * 4u);
             if (f > 1.0f) f = 1.0f;
