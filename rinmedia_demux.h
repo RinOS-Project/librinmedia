@@ -83,8 +83,10 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
 /* Index bounded packet extents after a successful metadata inspect.  The
  * output is failure-atomic and ordered by source byte offset.  MP4 requires
  * bounded stbl sample tables; EBML supports fixed, Xiph, and EBML-laced
- * SimpleBlock entries; legacy AVI uses its bounded idx1 entries and WAV uses
- * bounded data blocks.  FLAC exposes bounded STREAMINFO metadata and CRC
+ * SimpleBlock entries plus one bounded Block per Matroska BlockGroup;
+ * ReferenceBlock marks BlockGroup packets as non-keyframes.  Legacy AVI uses
+ * its bounded idx1 entries and WAV uses bounded data blocks.  FLAC exposes
+ * bounded STREAMINFO metadata and CRC
  * checked frame extents; Ogg exposes bounded Opus/Vorbis identification
  * metadata, a single-page config-0 Opus packet extent subset, and a
  * one-audio-packet-per-page Vorbis extent subset; ADTS exposes

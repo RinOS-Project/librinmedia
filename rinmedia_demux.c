@@ -2128,6 +2128,96 @@ static int webm_lace_sizes(const uint8_t* data, size_t begin, size_t end,
     }
 }
 
+static int webm_append_block(const uint8_t* data, size_t payload,
+                             size_t element_end, uint64_t cluster_timecode,
+                             const RinMediaDemuxInfoV1* info,
+                             RinMediaDemuxPacketTableV1* output,
+                             int keyframe_override)
+{
+    uint32_t track_id;
+    size_t track_bytes;
+    int16_t relative;
+    uint8_t flags;
+    uint32_t lace_sizes[RIN_MEDIA_DEMUX_MAX_PACKETS];
+    uint32_t lace_count;
+    size_t packet_data;
+    uint32_t lace_index;
+    if (!data || !info || !output || payload > element_end ||
+        element_end - payload < 4u ||
+        !webm_track_number(data + payload, element_end - payload,
+                           &track_id, &track_bytes) ||
+        track_bytes > element_end - payload - 3u)
+        return 0;
+    relative = (int16_t)(((uint16_t)data[payload + track_bytes] << 8u) |
+                         data[payload + track_bytes + 1u]);
+    flags = data[payload + track_bytes + 2u];
+    if (!webm_lace_sizes(data, payload + track_bytes + 3u, element_end,
+                         flags, lace_sizes, &lace_count, &packet_data))
+        return 0;
+    if (media_track_index(info, track_id) < 0 || lace_count >
+        RIN_MEDIA_DEMUX_MAX_PACKETS - output->packet_count)
+        return 0;
+    if (relative < 0 && (uint64_t)(-(int64_t)relative) > cluster_timecode)
+        return 0;
+    if (relative >= 0 &&
+        UINT64_MAX - cluster_timecode < (uint64_t)relative)
+        return 0;
+    for (lace_index = 0u; lace_index < lace_count; ++lace_index) {
+        RinMediaDemuxPacketV1 packet;
+        memset(&packet, 0, sizeof(packet));
+        packet.byte_offset = packet_data;
+        packet.byte_size = lace_sizes[lace_index];
+        packet.track_id = track_id;
+        packet.timestamp_ticks = relative < 0 ?
+            cluster_timecode - (uint64_t)(-(int64_t)relative) :
+            cluster_timecode + (uint64_t)relative;
+        packet.flags = (keyframe_override < 0 ? (flags & 0x80u) != 0u :
+                        keyframe_override != 0) ?
+            RIN_MEDIA_DEMUX_PACKET_KEYFRAME : 0u;
+        if (packet.byte_size == 0u || packet.byte_size > 1024u * 1024u)
+            return 0;
+        output->packets[output->packet_count++] = packet;
+        packet_data += packet.byte_size;
+    }
+    return 1;
+}
+
+static int webm_index_block_group(const uint8_t* data, size_t begin,
+                                  size_t end, uint64_t cluster_timecode,
+                                  const RinMediaDemuxInfoV1* info,
+                                  RinMediaDemuxPacketTableV1* output)
+{
+    size_t offset = begin;
+    size_t block_payload = 0u;
+    size_t block_end = 0u;
+    int have_block = 0;
+    int has_reference = 0;
+    while (offset < end) {
+        uint64_t id;
+        size_t payload;
+        size_t element_end;
+        int unknown_size = 0;
+        if (!ebml_element(data, end, offset, &id, &payload, &element_end,
+                          &unknown_size) || unknown_size)
+            return 0;
+        if (id == UINT64_C(0xa1)) { /* Block */
+            if (have_block) return 0;
+            block_payload = payload;
+            block_end = element_end;
+            have_block = 1;
+        } else if (id == UINT64_C(0xfb)) { /* ReferenceBlock */
+            const size_t length = element_end - payload;
+            if (length == 0u || length > 8u) return 0;
+            has_reference = 1;
+        }
+        offset = element_end;
+    }
+    if (!have_block || offset != end) return 0;
+    return webm_append_block(data, block_payload, block_end,
+                             cluster_timecode, info, output,
+                             has_reference ? 0 : 1);
+}
+
 static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
                               const RinMediaDemuxInfoV1* info,
                               RinMediaDemuxPacketTableV1* output)
@@ -2149,49 +2239,15 @@ static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
             cluster_timecode = ebml_uint(data + payload, length);
             have_timecode = 1;
         } else if (id == UINT64_C(0xa3)) { /* SimpleBlock */
-            uint32_t track_id;
-            size_t track_bytes;
-            int16_t relative;
-            uint8_t flags;
-            uint32_t lace_sizes[RIN_MEDIA_DEMUX_MAX_PACKETS];
-            uint32_t lace_count;
-            size_t packet_data;
-            uint32_t lace_index;
-            if (!have_timecode || element_end - payload < 4u ||
-                !webm_track_number(data + payload, element_end - payload,
-                                    &track_id, &track_bytes) ||
-                track_bytes > element_end - payload - 3u)
+            if (!have_timecode || !webm_append_block(
+                    data, payload, element_end, cluster_timecode, info,
+                    output, -1))
                 return 0;
-            relative = (int16_t)(((uint16_t)data[payload + track_bytes] << 8u) |
-                                 data[payload + track_bytes + 1u]);
-            flags = data[payload + track_bytes + 2u];
-            if (!webm_lace_sizes(data, payload + track_bytes + 3u, element_end,
-                                 flags, lace_sizes, &lace_count, &packet_data))
+        } else if (id == UINT64_C(0xa0)) { /* BlockGroup */
+            if (!have_timecode || !webm_index_block_group(
+                    data, payload, element_end, cluster_timecode, info,
+                    output))
                 return 0;
-            if (media_track_index(info, track_id) < 0 || lace_count >
-                RIN_MEDIA_DEMUX_MAX_PACKETS - output->packet_count)
-                return 0;
-            if (relative < 0 && (uint64_t)(-(int64_t)relative) > cluster_timecode)
-                return 0;
-            if (relative >= 0 &&
-                UINT64_MAX - cluster_timecode < (uint64_t)relative)
-                return 0;
-            for (lace_index = 0u; lace_index < lace_count; ++lace_index) {
-                RinMediaDemuxPacketV1 packet;
-                memset(&packet, 0, sizeof(packet));
-                packet.byte_offset = packet_data;
-                packet.byte_size = lace_sizes[lace_index];
-                packet.track_id = track_id;
-                packet.timestamp_ticks = relative < 0 ?
-                    cluster_timecode - (uint64_t)(-(int64_t)relative) :
-                    cluster_timecode + (uint64_t)relative;
-                packet.flags = (flags & 0x80u) != 0u ?
-                    RIN_MEDIA_DEMUX_PACKET_KEYFRAME : 0u;
-                if (packet.byte_size == 0u || packet.byte_size > 1024u * 1024u)
-                    return 0;
-                output->packets[output->packet_count++] = packet;
-                packet_data += packet.byte_size;
-            }
         }
         offset = element_end;
     }
