@@ -1706,7 +1706,7 @@ static int mp4_parse_sample_table(const uint8_t* data, size_t length,
             entry->sample_description_index =
                 read_be32(data + 16u + index * 12u);
             if (entry->first_chunk == 0u || entry->samples_per_chunk == 0u ||
-                entry->sample_description_index == 0u ||
+                entry->sample_description_index != 1u ||
                 (index != 0u && entry->first_chunk <=
                     tables->stsc[index - 1u].first_chunk))
                 return -1;
