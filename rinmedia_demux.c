@@ -607,11 +607,14 @@ static int ogg_inspect(const uint8_t* data, size_t source_bytes,
 
 /* This is an extent-only Opus subset.  It deliberately admits only the
  * config-0, one- or two-frame TOC forms, whose 10 ms frames have a fixed
- * 48 kHz duration.  Packet bytes are never decoded here; every other TOC,
- * page-spanning packet, and Vorbis packet remains Unsupported. */
+ * 48 kHz duration.  Code-2's RFC 6716 one/two-byte first-frame length and
+ * 1275-byte per-frame bound are checked without decoding packet bytes;
+ * every other TOC, page-spanning packet, and Vorbis packet remains
+ * Unsupported. */
 static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
                                     uint32_t* duration_ticks)
 {
+    const size_t max_frame_bytes = 1275u;
     uint32_t frame_code;
     uint32_t frame_count;
     if (!packet || !duration_ticks || packet_bytes < 2u ||
@@ -619,20 +622,34 @@ static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
         return 0;
     frame_code = (uint32_t)(packet[0] >> 6u);
     if (frame_code == 0u) {
+        if (packet_bytes - 1u > max_frame_bytes)
+            return 0;
         frame_count = 1u;
     } else if (frame_code == 1u) {
         /* C=1 stores two equal-sized frames after the TOC byte. */
-        if (packet_bytes < 3u || ((packet_bytes - 1u) & 1u) != 0u)
+        if (packet_bytes < 3u || ((packet_bytes - 1u) & 1u) != 0u ||
+            (packet_bytes - 1u) / 2u > max_frame_bytes)
             return 0;
         frame_count = 2u;
     } else if (frame_code == 2u) {
         size_t first_frame_size;
+        size_t length_bytes;
         size_t frame_payload_size;
-        if (packet_bytes < 4u) return 0;
-        first_frame_size = (size_t)packet[1] |
-                           ((size_t)packet[2] << 8u);
-        frame_payload_size = packet_bytes - 3u;
-        if (first_frame_size == 0u || first_frame_size >= frame_payload_size)
+        if (packet_bytes < 3u) return 0;
+        if (packet[1] < 252u) {
+            first_frame_size = (size_t)packet[1];
+            length_bytes = 1u;
+        } else {
+            first_frame_size = (size_t)packet[1] +
+                               ((size_t)packet[2] * 4u);
+            length_bytes = 2u;
+        }
+        if (packet_bytes <= 1u + length_bytes)
+            return 0;
+        frame_payload_size = packet_bytes - 1u - length_bytes;
+        if (first_frame_size == 0u || first_frame_size > max_frame_bytes ||
+            first_frame_size >= frame_payload_size ||
+            frame_payload_size - first_frame_size > max_frame_bytes)
             return 0;
         frame_count = 2u;
     } else {

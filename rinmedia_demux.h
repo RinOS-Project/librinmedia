@@ -96,7 +96,8 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
  * one-audio-packet-per-page Vorbis extent subset; ADTS exposes
  * bounded AAC frame metadata and extents.  Subframe decoding, packet copying,
  * filesystem access, and backend ownership remain outside this public
- * contract. */
+ * contract.  Code-2 Opus first-frame lengths use the RFC 6716 one/two-byte
+ * form and each frame is bounded to 1275 bytes. */
 int rin_media_container_index_packets(
     const uint8_t* data, size_t source_bytes,
     const RinMediaDemuxInfoV1* info, size_t info_size,
