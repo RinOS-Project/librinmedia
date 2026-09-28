@@ -2133,6 +2133,7 @@ static int webm_append_block(const uint8_t* data, size_t payload,
                              const RinMediaDemuxInfoV1* info,
                              RinMediaDemuxPacketTableV1* output,
                              int keyframe_override,
+                             int has_duration,
                              uint32_t duration_ticks)
 {
     uint32_t track_id;
@@ -2158,7 +2159,7 @@ static int webm_append_block(const uint8_t* data, size_t payload,
     if (media_track_index(info, track_id) < 0 || lace_count >
         RIN_MEDIA_DEMUX_MAX_PACKETS - output->packet_count)
         return 0;
-    if (duration_ticks != 0u && lace_count != 1u)
+    if (has_duration && lace_count != 1u)
         return 0;
     if (relative < 0 && (uint64_t)(-(int64_t)relative) > cluster_timecode)
         return 0;
@@ -2174,7 +2175,7 @@ static int webm_append_block(const uint8_t* data, size_t payload,
         packet.timestamp_ticks = relative < 0 ?
             cluster_timecode - (uint64_t)(-(int64_t)relative) :
             cluster_timecode + (uint64_t)relative;
-        packet.duration_ticks = duration_ticks;
+        packet.duration_ticks = has_duration ? duration_ticks : 0u;
         packet.flags = (keyframe_override < 0 ? (flags & 0x80u) != 0u :
                         keyframe_override != 0) ?
             RIN_MEDIA_DEMUX_PACKET_KEYFRAME : 0u;
@@ -2228,7 +2229,8 @@ static int webm_index_block_group(const uint8_t* data, size_t begin,
     if (!have_block || offset != end) return 0;
     return webm_append_block(data, block_payload, block_end,
                              cluster_timecode, info, output,
-                             has_reference ? 0 : 1, block_duration);
+                             has_reference ? 0 : 1, have_duration,
+                             block_duration);
 }
 
 static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
@@ -2254,7 +2256,7 @@ static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
         } else if (id == UINT64_C(0xa3)) { /* SimpleBlock */
             if (!have_timecode || !webm_append_block(
                     data, payload, element_end, cluster_timecode, info,
-                    output, -1, 0u))
+                    output, -1, 0, 0u))
                 return 0;
         } else if (id == UINT64_C(0xa0)) { /* BlockGroup */
             if (!have_timecode || !webm_index_block_group(
