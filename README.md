@@ -37,6 +37,8 @@ before a colliding track table is published.
 WebM/Matroska track metadata inherits the validated Segment `TimecodeScale`
 (default 1,000,000) into each public track's `time_scale`; no guessed track
 duration is published when the bounded input does not provide one.
+The scale is a positive 1- to 4-byte EBML integer and repeated Info scale
+elements are rejected rather than silently last-wins.
 When an Info `Duration` element is present, its IEEE-754 value must be a
 non-negative finite 32-bit or 64-bit value; NaN and infinity are rejected
 before metadata is published.

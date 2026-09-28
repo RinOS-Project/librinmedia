@@ -1468,9 +1468,11 @@ static int webm_find_tracks(const uint8_t* data, size_t begin, size_t end,
                                   &info_payload, &info_end,
                                   &info_unknown_size) || info_unknown_size)
                     return 0;
-                if (info_id == UINT64_C(0x2ad7b1) &&
-                    info_end - info_payload > 0u &&
-                    info_end - info_payload <= 4u) {
+                if (info_id == UINT64_C(0x2ad7b1)) {
+                    if (info_end - info_payload == 0u ||
+                        info_end - info_payload > 4u ||
+                        output->time_scale != 0u)
+                        return 0;
                     uint64_t scale = ebml_uint(data + info_payload,
                                                info_end - info_payload);
                     if (scale == 0u || scale > UINT32_MAX) return 0;
