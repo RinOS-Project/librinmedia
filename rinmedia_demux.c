@@ -605,11 +605,11 @@ static int ogg_inspect(const uint8_t* data, size_t source_bytes,
     return RIN_MEDIA_DEMUX_OK;
 }
 
-/* This is an extent-only Opus subset.  It admits bounded C=0/1/2 TOC forms
- * and no-padding C=3 forms, deriving their known RFC 6716 frame duration
- * without decoding packet bytes.  Variable frame lengths and the 1275-byte
- * per-frame bound are checked; padded C=3, page-spanning packets, and Vorbis
- * packets remain Unsupported. */
+/* This is an extent-only Opus subset.  It admits bounded C=0/1/2/3 forms,
+ * deriving their known RFC 6716 frame duration without decoding packet
+ * bytes.  Variable frame lengths, padding, and the 1275-byte per-frame
+ * bound are checked; page-spanning packets and Vorbis packets remain
+ * Unsupported. */
 static int ogg_opus_frame_duration(uint32_t config, uint32_t* frame_ticks)
 {
     if (!frame_ticks || config > 31u) return 0;
@@ -683,17 +683,40 @@ static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
         frame_count = 2u;
     } else if (frame_code == 3u) {
         size_t cursor = 2u;
+        size_t padding_bytes = 0u;
+        size_t frame_payload_end = packet_bytes;
         size_t payload_bytes;
         size_t frame_bytes;
         size_t signaled_bytes = 0u;
         uint32_t index;
         int variable = (packet[1] & 0x01u) != 0u;
-        if (packet_bytes < 2u || (packet[1] & 0x02u) != 0u ||
-            (packet[1] >> 2u) == 0u)
+        if (packet_bytes < 2u || (packet[1] >> 2u) == 0u)
             return 0;
         frame_count = (uint32_t)(packet[1] >> 2u);
+        if ((packet[1] & 0x02u) != 0u) {
+            size_t padding_header_bytes = 0u;
+            for (;;) {
+                size_t value;
+                if (cursor >= packet_bytes) return 0;
+                value = (size_t)packet[cursor++];
+                ++padding_header_bytes;
+                if (value == 255u) {
+                    if (padding_bytes > (size_t)-1 - 254u) return 0;
+                    padding_bytes += 254u;
+                } else {
+                    if (padding_bytes > (size_t)-1 - value) return 0;
+                    padding_bytes += value;
+                    break;
+                }
+            }
+            if (padding_header_bytes > packet_bytes - 2u ||
+                padding_bytes > packet_bytes - 2u - padding_header_bytes)
+                return 0;
+            frame_payload_end = packet_bytes - padding_bytes;
+        }
         if (!variable) {
-            payload_bytes = packet_bytes - 2u;
+            if (cursor > frame_payload_end) return 0;
+            payload_bytes = frame_payload_end - cursor;
             if (payload_bytes == 0u || payload_bytes % frame_count != 0u)
                 return 0;
             frame_bytes = payload_bytes / frame_count;
@@ -701,17 +724,18 @@ static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
                 return 0;
         } else {
             for (index = 0u; index + 1u < frame_count; ++index) {
-                if (!ogg_opus_read_frame_length(packet, packet_bytes, &cursor,
+                if (!ogg_opus_read_frame_length(packet, frame_payload_end,
+                                                 &cursor,
                                                  &frame_bytes) ||
                     frame_bytes == 0u || frame_bytes > max_frame_bytes ||
                     signaled_bytes > (size_t)-1 - frame_bytes)
                     return 0;
                 signaled_bytes += frame_bytes;
             }
-            if (cursor > packet_bytes ||
-                signaled_bytes > packet_bytes - cursor)
+            if (cursor > frame_payload_end ||
+                signaled_bytes > frame_payload_end - cursor)
                 return 0;
-            frame_bytes = packet_bytes - cursor - signaled_bytes;
+            frame_bytes = frame_payload_end - cursor - signaled_bytes;
             if (frame_bytes == 0u || frame_bytes > max_frame_bytes)
                 return 0;
         }
