@@ -301,6 +301,13 @@ static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) 
         ctx->block_align == 0u)
         return rwav_open_fail(ctx, RWAV_DATA_ERROR);
 
+    /* A data chunk must end on a complete interleaved block.  Accepting a
+     * trailing byte here would make get_info() silently floor the sample
+     * count while rwav_read_s16() exposed a partial frame.  Keep the legacy
+     * reader failure-closed; rinmedia_demux applies the same boundary. */
+    if (ctx->data_size % (size_t)ctx->block_align != 0u)
+        return rwav_open_fail(ctx, RWAV_DATA_ERROR);
+
     if (ctx->format == RWAV_FORMAT_PCM) {
         size_t bytes_per_sample;
         if (ctx->bits_per_sample != 8u && ctx->bits_per_sample != 16u &&
