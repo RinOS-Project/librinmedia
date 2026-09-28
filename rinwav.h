@@ -178,6 +178,27 @@ static inline uint32_t rwav_read_le32(const uint8_t* bytes)
            ((uint32_t)bytes[2] << 16u) | ((uint32_t)bytes[3] << 24u);
 }
 
+static inline int rwav_extensible_subformat_valid(const uint8_t* guid,
+                                                   uint16_t format)
+{
+    static const uint8_t suffix[12] = {
+        0u, 0u, 0x10u, 0u, 0x80u, 0u, 0u, 0xaau,
+        0u, 0x38u, 0x9bu, 0x71u
+    };
+    size_t index;
+    if (guid == NULL ||
+        (format != RWAV_FORMAT_PCM && format != RWAV_FORMAT_IEEE_FLOAT &&
+         format != RWAV_FORMAT_ALAW && format != RWAV_FORMAT_MULAW &&
+         format != RWAV_FORMAT_IMA_ADPCM))
+        return 0;
+    if (guid[0] != (uint8_t)format || guid[1] != 0u || guid[2] != 0u ||
+        guid[3] != 0u)
+        return 0;
+    for (index = 0u; index < sizeof(suffix); ++index)
+        if (guid[index + 4u] != suffix[index]) return 0;
+    return 1;
+}
+
 static inline float rwav_read_le_float(const uint8_t* bytes)
 {
     union {
@@ -280,10 +301,15 @@ static inline int rwav_open(RWavContext* ctx, const uint8_t* data, size_t size) 
             ctx->block_align = rwav_read_le16(data + payload + 12u);
             ctx->bits_per_sample = rwav_read_le16(data + payload + 14u);
             if (ctx->format == RWAV_FORMAT_EXTENSIBLE) {
+                uint16_t sub_format;
                 if (chunk_size < sizeof(RWavFormatEx) ||
                     rwav_read_le16(data + payload + 16u) < 22u)
                     return rwav_open_fail(ctx, RWAV_DATA_ERROR);
-                ctx->format = rwav_read_le16(data + payload + 24u);
+                sub_format = rwav_read_le16(data + payload + 24u);
+                if (!rwav_extensible_subformat_valid(data + payload + 24u,
+                                                     sub_format))
+                    return rwav_open_fail(ctx, RWAV_UNSUPPORTED);
+                ctx->format = sub_format;
             }
             format_seen = 1;
         } else if (chunk_id == RWAV_DATA) {
