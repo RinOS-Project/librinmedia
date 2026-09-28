@@ -31,6 +31,8 @@ elements must carry a finite size; an unknown-size leaf is rejected before
 metadata or packet output is published.
 TrackNumber values above `UINT32_MAX` are also rejected instead of being
 truncated into a colliding public track ID.
+Duplicate MP4 `track_ID` and WebM/Matroska `TrackNumber` values are rejected
+before a colliding track table is published.
 
 WebM/Matroska track metadata inherits the validated Segment `TimecodeScale`
 (default 1,000,000) into each public track's `time_scale`; no guessed track

@@ -247,6 +247,16 @@ static int mp4_sample_entry(const uint8_t* data, size_t length,
     return 1;
 }
 
+static int mp4_track_id_exists(const RinMediaDemuxInfoV1* output,
+                               uint32_t track_id)
+{
+    uint32_t index;
+    if (!output || track_id == 0u) return 0;
+    for (index = 0u; index < output->track_count; ++index)
+        if (output->tracks[index].track_id == track_id) return 1;
+    return 0;
+}
+
 static int mp4_box_is_container(uint32_t type)
 {
     switch (type) {
@@ -326,7 +336,8 @@ static int mp4_inspect(const uint8_t* data, size_t source_bytes,
                     if (!mp4_find_track_fields(data, trak_box.payload,
                                                trak_box.end, &track, 0) ||
                         track.track_id == 0u || track.kind == 0u ||
-                        track.codec_id == 0u || track.time_scale == 0u)
+                        track.codec_id == 0u || track.time_scale == 0u ||
+                        mp4_track_id_exists(output, track.track_id))
                         return RIN_MEDIA_DEMUX_UNSUPPORTED;
                     if (output->track_count == 0u) {
                         output->time_scale = track.time_scale;
@@ -1343,6 +1354,16 @@ static int ebml_copy_codec(const uint8_t* data, size_t length,
     return 1;
 }
 
+static int webm_track_id_exists(const RinMediaDemuxInfoV1* output,
+                                uint32_t track_id)
+{
+    uint32_t index;
+    if (!output || track_id == 0u) return 0;
+    for (index = 0u; index < output->track_count; ++index)
+        if (output->tracks[index].track_id == track_id) return 1;
+    return 0;
+}
+
 static int ebml_track(const uint8_t* data, size_t begin, size_t end,
                       RinMediaDemuxTrackV1* track)
 {
@@ -1417,7 +1438,8 @@ static int webm_find_tracks(const uint8_t* data, size_t begin, size_t end,
                     if (output->track_count >= RIN_MEDIA_DEMUX_MAX_TRACKS)
                         return 0;
                     memset(&track, 0, sizeof(track));
-                    if (!ebml_track(data, track_payload, track_end, &track))
+                    if (!ebml_track(data, track_payload, track_end, &track) ||
+                        webm_track_id_exists(output, track.track_id))
                         return 0;
                     output->tracks[output->track_count++] = track;
                 }
