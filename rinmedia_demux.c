@@ -1456,6 +1456,7 @@ static int webm_inspect(const uint8_t* data, size_t source_bytes,
                         RinMediaDemuxInfoV1* output)
 {
     uint32_t container = 0u;
+    uint32_t track_index;
     uint64_t id;
     size_t header_end;
     size_t offset;
@@ -1489,6 +1490,8 @@ static int webm_inspect(const uint8_t* data, size_t source_bytes,
     if (!found_segment || output->track_count == 0u)
         return RIN_MEDIA_DEMUX_UNSUPPORTED;
     if (output->time_scale == 0u) output->time_scale = 1000000u;
+    for (track_index = 0u; track_index < output->track_count; ++track_index)
+        output->tracks[track_index].time_scale = output->time_scale;
     output->container_id = container;
     return RIN_MEDIA_DEMUX_OK;
 }
