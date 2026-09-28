@@ -2132,7 +2132,8 @@ static int webm_append_block(const uint8_t* data, size_t payload,
                              size_t element_end, uint64_t cluster_timecode,
                              const RinMediaDemuxInfoV1* info,
                              RinMediaDemuxPacketTableV1* output,
-                             int keyframe_override)
+                             int keyframe_override,
+                             uint32_t duration_ticks)
 {
     uint32_t track_id;
     size_t track_bytes;
@@ -2157,6 +2158,8 @@ static int webm_append_block(const uint8_t* data, size_t payload,
     if (media_track_index(info, track_id) < 0 || lace_count >
         RIN_MEDIA_DEMUX_MAX_PACKETS - output->packet_count)
         return 0;
+    if (duration_ticks != 0u && lace_count != 1u)
+        return 0;
     if (relative < 0 && (uint64_t)(-(int64_t)relative) > cluster_timecode)
         return 0;
     if (relative >= 0 &&
@@ -2171,6 +2174,7 @@ static int webm_append_block(const uint8_t* data, size_t payload,
         packet.timestamp_ticks = relative < 0 ?
             cluster_timecode - (uint64_t)(-(int64_t)relative) :
             cluster_timecode + (uint64_t)relative;
+        packet.duration_ticks = duration_ticks;
         packet.flags = (keyframe_override < 0 ? (flags & 0x80u) != 0u :
                         keyframe_override != 0) ?
             RIN_MEDIA_DEMUX_PACKET_KEYFRAME : 0u;
@@ -2190,7 +2194,9 @@ static int webm_index_block_group(const uint8_t* data, size_t begin,
     size_t offset = begin;
     size_t block_payload = 0u;
     size_t block_end = 0u;
+    uint32_t block_duration = 0u;
     int have_block = 0;
+    int have_duration = 0;
     int has_reference = 0;
     while (offset < end) {
         uint64_t id;
@@ -2209,13 +2215,20 @@ static int webm_index_block_group(const uint8_t* data, size_t begin,
             const size_t length = element_end - payload;
             if (length == 0u || length > 8u) return 0;
             has_reference = 1;
+        } else if (id == UINT64_C(0x9b)) { /* BlockDuration */
+            const size_t length = element_end - payload;
+            const uint64_t value = length == 0u || length > 8u ?
+                UINT64_MAX : ebml_uint(data + payload, length);
+            if (have_duration || value > UINT32_MAX) return 0;
+            block_duration = (uint32_t)value;
+            have_duration = 1;
         }
         offset = element_end;
     }
     if (!have_block || offset != end) return 0;
     return webm_append_block(data, block_payload, block_end,
                              cluster_timecode, info, output,
-                             has_reference ? 0 : 1);
+                             has_reference ? 0 : 1, block_duration);
 }
 
 static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
@@ -2241,7 +2254,7 @@ static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
         } else if (id == UINT64_C(0xa3)) { /* SimpleBlock */
             if (!have_timecode || !webm_append_block(
                     data, payload, element_end, cluster_timecode, info,
-                    output, -1))
+                    output, -1, 0u))
                 return 0;
         } else if (id == UINT64_C(0xa0)) { /* BlockGroup */
             if (!have_timecode || !webm_index_block_group(
