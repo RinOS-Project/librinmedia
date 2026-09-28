@@ -21,9 +21,10 @@ RinMedia provides media-container parsing, audio/video decoding interfaces, and 
 `rinmedia_aac.h` provides a public, allocation-free MPEG-4 AudioSpecificConfig
 inspect for AAC owners. It accepts at most 32 bytes, resolves the bounded
 sampling-frequency and channel-configuration fields, and reports SBR/PS
-extension metadata without decoding payloads or taking filesystem/service
-ownership. Invalid, truncated, oversized, or unsupported configuration input
-is rejected failure-atomically.
+extension metadata, including bounded LC sync extensions, without decoding
+payloads or taking filesystem/service ownership. Conflicting or malformed
+extension metadata is rejected failure-atomically. Invalid, truncated,
+oversized, or unsupported configuration input is rejected failure-atomically.
 
 `rinmedia_flac.h` provides an allocation-free single-frame decoder. The
 caller supplies a bounded `int64_t` scratch arena and an `int32_t` interleaved

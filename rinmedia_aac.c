@@ -81,6 +81,55 @@ static int channel_count(uint32_t configuration, uint32_t* count)
     return 1;
 }
 
+static int inspect_sync_extension(const RinMediaAacBitReader* input,
+                                  RinMediaAacConfigV1* candidate)
+{
+    RinMediaAacBitReader scan;
+    if (input == NULL || candidate == NULL) return 0;
+    scan = *input;
+    while (scan.offset <= scan.bits && scan.bits - scan.offset >= 11u) {
+        RinMediaAacBitReader probe = scan;
+        uint32_t sync_type = 0u;
+        uint32_t extension_type = 0u;
+        uint32_t sbr_present = 0u;
+        uint32_t extension_rate = 0u;
+        if (!read_bits(&probe, 11u, &sync_type)) return 0;
+        if (sync_type != 0x2b7u) {
+            ++scan.offset;
+            continue;
+        }
+        if (!read_audio_object_type(&probe, &extension_type) ||
+            (extension_type != 5u && extension_type != 29u) ||
+            !read_bits(&probe, 1u, &sbr_present))
+            return 0;
+        if (!sbr_present) return 1;
+        if (!read_sample_rate(&probe, &extension_rate)) return 0;
+        if (candidate->extension_audio_object_type != 0u &&
+            candidate->extension_audio_object_type != extension_type)
+            return 0;
+        if (candidate->extension_sample_rate_hz != 0u &&
+            candidate->extension_sample_rate_hz != extension_rate)
+            return 0;
+        candidate->extension_audio_object_type = extension_type;
+        candidate->extension_sample_rate_hz = extension_rate;
+        candidate->sbr_present = 1u;
+        candidate->ps_present = extension_type == 29u ? 1u : 0u;
+        if (extension_type == 5u &&
+            probe.bits - probe.offset >= 12u) {
+            RinMediaAacBitReader ps_probe = probe;
+            uint32_t ps_sync = 0u;
+            uint32_t ps_present = 0u;
+            if (!read_bits(&ps_probe, 11u, &ps_sync) ||
+                ps_sync != 0x548u || !read_bits(&ps_probe, 1u,
+                                                  &ps_present))
+                return 1;
+            candidate->ps_present = ps_present != 0u ? 1u : 0u;
+        }
+        return 1;
+    }
+    return 1;
+}
+
 int rin_media_aac_config_inspect(const uint8_t* data, size_t source_bytes,
                                 RinMediaAacConfigV1* output,
                                 size_t output_size)
@@ -131,6 +180,8 @@ int rin_media_aac_config_inspect(const uint8_t* data, size_t source_bytes,
         candidate.sbr_present = 0u;
         candidate.ps_present = 0u;
     }
+    if (!inspect_sync_extension(&reader, &candidate))
+        return RIN_MEDIA_AAC_CONFIG_UNSUPPORTED;
     *output = candidate;
     return RIN_MEDIA_AAC_CONFIG_OK;
 }
