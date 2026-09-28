@@ -29,6 +29,8 @@ The EBML demux accepts unknown-size only for the bounded Segment/Cluster
 masters used by the packet path. TrackEntry, Info, Timecode, and SimpleBlock
 elements must carry a finite size; an unknown-size leaf is rejected before
 metadata or packet output is published.
+TrackNumber values above `UINT32_MAX` are also rejected instead of being
+truncated into a colliding public track ID.
 
 WebM/Matroska track metadata inherits the validated Segment `TimecodeScale`
 (default 1,000,000) into each public track's `time_scale`; no guessed track

@@ -1359,10 +1359,12 @@ static int ebml_track(const uint8_t* data, size_t begin, size_t end,
                           &unknown_size) || unknown_size)
             return 0;
         if (id == UINT64_C(0xd7)) {
+            uint64_t track_number;
             if (element_end - payload == 0u || element_end - payload > 8u)
                 return 0;
-            track->track_id = (uint32_t)ebml_uint(data + payload,
-                                                  element_end - payload);
+            track_number = ebml_uint(data + payload, element_end - payload);
+            if (track_number == 0u || track_number > UINT32_MAX) return 0;
+            track->track_id = (uint32_t)track_number;
             got_number = track->track_id != 0u;
         } else if (id == UINT64_C(0x83)) {
             uint64_t track_type;
