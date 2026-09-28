@@ -605,10 +605,10 @@ static int ogg_inspect(const uint8_t* data, size_t source_bytes,
     return RIN_MEDIA_DEMUX_OK;
 }
 
-/* This is an extent-only Opus subset.  It admits the bounded C=0/1/2 TOC
- * forms and derives their known RFC 6716 frame duration without decoding
- * packet bytes.  Code-2's one/two-byte first-frame length and the 1275-byte
- * per-frame bound are checked; C=3, page-spanning packets, and Vorbis
+/* This is an extent-only Opus subset.  It admits bounded C=0/1/2 TOC forms
+ * and no-padding C=3 forms, deriving their known RFC 6716 frame duration
+ * without decoding packet bytes.  Variable frame lengths and the 1275-byte
+ * per-frame bound are checked; padded C=3, page-spanning packets, and Vorbis
  * packets remain Unsupported. */
 static int ogg_opus_frame_duration(uint32_t config, uint32_t* frame_ticks)
 {
@@ -621,6 +621,25 @@ static int ogg_opus_frame_duration(uint32_t config, uint32_t* frame_ticks)
     } else {
         static const uint32_t celt_ticks[4] = {120u, 240u, 480u, 960u};
         *frame_ticks = celt_ticks[config & 3u];
+    }
+    return 1;
+}
+
+static int ogg_opus_read_frame_length(const uint8_t* packet,
+                                      size_t packet_bytes, size_t* cursor,
+                                      size_t* frame_bytes)
+{
+    size_t first;
+    if (!packet || !cursor || !frame_bytes || *cursor >= packet_bytes)
+        return 0;
+    first = (size_t)packet[*cursor];
+    ++*cursor;
+    if (first >= 252u) {
+        if (*cursor >= packet_bytes) return 0;
+        *frame_bytes = first + (size_t)packet[*cursor] * 4u;
+        ++*cursor;
+    } else {
+        *frame_bytes = first;
     }
     return 1;
 }
@@ -649,29 +668,58 @@ static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
         frame_count = 2u;
     } else if (frame_code == 2u) {
         size_t first_frame_size;
-        size_t length_bytes;
+        size_t cursor = 1u;
         size_t frame_payload_size;
         if (packet_bytes < 3u) return 0;
-        if (packet[1] < 252u) {
-            first_frame_size = (size_t)packet[1];
-            length_bytes = 1u;
-        } else {
-            first_frame_size = (size_t)packet[1] +
-                               ((size_t)packet[2] * 4u);
-            length_bytes = 2u;
-        }
-        if (packet_bytes <= 1u + length_bytes)
+        if (!ogg_opus_read_frame_length(packet, packet_bytes, &cursor,
+                                         &first_frame_size) ||
+            cursor >= packet_bytes)
             return 0;
-        frame_payload_size = packet_bytes - 1u - length_bytes;
+        frame_payload_size = packet_bytes - cursor;
         if (first_frame_size == 0u || first_frame_size > max_frame_bytes ||
             first_frame_size >= frame_payload_size ||
             frame_payload_size - first_frame_size > max_frame_bytes)
             return 0;
         frame_count = 2u;
+    } else if (frame_code == 3u) {
+        size_t cursor = 2u;
+        size_t payload_bytes;
+        size_t frame_bytes;
+        size_t signaled_bytes = 0u;
+        uint32_t index;
+        int variable = (packet[1] & 0x01u) != 0u;
+        if (packet_bytes < 2u || (packet[1] & 0x02u) != 0u ||
+            (packet[1] >> 2u) == 0u)
+            return 0;
+        frame_count = (uint32_t)(packet[1] >> 2u);
+        if (!variable) {
+            payload_bytes = packet_bytes - 2u;
+            if (payload_bytes == 0u || payload_bytes % frame_count != 0u)
+                return 0;
+            frame_bytes = payload_bytes / frame_count;
+            if (frame_bytes == 0u || frame_bytes > max_frame_bytes)
+                return 0;
+        } else {
+            for (index = 0u; index + 1u < frame_count; ++index) {
+                if (!ogg_opus_read_frame_length(packet, packet_bytes, &cursor,
+                                                 &frame_bytes) ||
+                    frame_bytes == 0u || frame_bytes > max_frame_bytes ||
+                    signaled_bytes > (size_t)-1 - frame_bytes)
+                    return 0;
+                signaled_bytes += frame_bytes;
+            }
+            if (cursor > packet_bytes ||
+                signaled_bytes > packet_bytes - cursor)
+                return 0;
+            frame_bytes = packet_bytes - cursor - signaled_bytes;
+            if (frame_bytes == 0u || frame_bytes > max_frame_bytes)
+                return 0;
+        }
     } else {
         frame_count = 0u;
     }
-    if (frame_count == 0u || packet_bytes < 1u + frame_count)
+    if (frame_count == 0u || packet_bytes < 1u + frame_count ||
+        (uint64_t)frame_count * (uint64_t)frame_ticks > 5760u)
         return 0;
     *duration_ticks = frame_count * frame_ticks;
     return 1;

@@ -91,8 +91,8 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
  * bounded data blocks.  FLAC exposes
  * bounded STREAMINFO metadata and CRC
  * checked frame extents; Ogg exposes bounded Opus/Vorbis identification
- * metadata, a single-page bounded Opus packet extent subset with one or two
- * C=0/1/2 frames of known 2.5--60 ms duration, and a
+ * metadata, a single-page bounded Opus packet extent subset with C=0/1/2
+ * and no-padding C=3 frames of known 2.5--60 ms duration, and a
  * one-audio-packet-per-page Vorbis extent subset; ADTS exposes
  * bounded AAC frame metadata and extents.  Subframe decoding, packet copying,
  * filesystem access, and backend ownership remain outside this public
