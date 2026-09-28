@@ -303,7 +303,7 @@ static int mp4_find_track_fields(const uint8_t* data, size_t begin, size_t end,
             size_t length = box.end - box.payload;
             if ((*seen_fields & UINT32_C(0x08)) != 0u) return 0;
             *seen_fields |= UINT32_C(0x08);
-            if (length < 16u || read_be32(payload + 4u) == 0u ||
+            if (length < 16u || read_be32(payload + 4u) != 1u ||
                 !mp4_sample_entry(payload + 8u, length - 8u,
                                   &track->codec_id, track->codec_name))
                 return 0;
