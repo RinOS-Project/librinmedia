@@ -625,6 +625,16 @@ static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
         if (packet_bytes < 3u || ((packet_bytes - 1u) & 1u) != 0u)
             return 0;
         frame_count = 2u;
+    } else if (frame_code == 2u) {
+        size_t first_frame_size;
+        size_t frame_payload_size;
+        if (packet_bytes < 4u) return 0;
+        first_frame_size = (size_t)packet[1] |
+                           ((size_t)packet[2] << 8u);
+        frame_payload_size = packet_bytes - 3u;
+        if (first_frame_size == 0u || first_frame_size >= frame_payload_size)
+            return 0;
+        frame_count = 2u;
     } else {
         frame_count = 0u;
     }
