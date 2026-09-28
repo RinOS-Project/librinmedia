@@ -86,9 +86,10 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
  * SimpleBlock entries; legacy AVI uses its bounded idx1 entries and WAV uses
  * bounded data blocks.  FLAC exposes bounded STREAMINFO metadata and CRC
  * checked frame extents; Ogg exposes bounded Opus/Vorbis identification
- * metadata; ADTS exposes bounded AAC frame metadata and extents.  Subframe
- * decoding, packet copying, filesystem access, and backend ownership remain
- * outside this public contract. */
+ * metadata and a single-page config-0 Opus packet extent subset; ADTS exposes
+ * bounded AAC frame metadata and extents.  Subframe decoding, packet copying,
+ * filesystem access, and backend ownership remain outside this public
+ * contract. */
 int rin_media_container_index_packets(
     const uint8_t* data, size_t source_bytes,
     const RinMediaDemuxInfoV1* info, size_t info_size,

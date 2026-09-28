@@ -567,6 +567,112 @@ static int ogg_inspect(const uint8_t* data, size_t source_bytes,
     return RIN_MEDIA_DEMUX_OK;
 }
 
+/* This is an extent-only Opus subset.  It deliberately admits only the
+ * config-0, one- or two-frame TOC forms, whose 10 ms frames have a fixed
+ * 48 kHz duration.  Packet bytes are never decoded here; every other TOC,
+ * page-spanning packet, and Vorbis packet remains Unsupported. */
+static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
+                                    uint32_t* duration_ticks)
+{
+    uint32_t frame_count;
+    if (!packet || !duration_ticks || packet_bytes < 2u ||
+        (packet[0] & 0x3fu) != 0u)
+        return 0;
+    frame_count = (uint32_t)(packet[0] >> 6u) == 0u ? 1u :
+                  (uint32_t)(packet[0] >> 6u) == 1u ? 2u : 0u;
+    if (frame_count == 0u || packet_bytes < 1u + frame_count)
+        return 0;
+    *duration_ticks = frame_count * 480u;
+    return 1;
+}
+
+static int ogg_opus_index_packets(const uint8_t* data, size_t source_bytes,
+                                  const RinMediaDemuxInfoV1* info,
+                                  RinMediaDemuxPacketTableV1* output)
+{
+    RinMediaDemuxInfoV1 verified;
+    OggPageView page;
+    size_t offset = 0u;
+    size_t packet_start = 0u;
+    size_t packet_bytes = 0u;
+    uint64_t timestamp = 0u;
+    uint32_t serial = 0u;
+    uint32_t expected_sequence = 0u;
+    uint32_t page_count = 0u;
+    uint32_t header_packets = 0u;
+    int first_page = 1;
+    if (!data || !info || !output || info->container_id !=
+        RIN_MEDIA_CONTAINER_OGG || info->track_count != 1u ||
+        rin_media_container_inspect(data, source_bytes, &verified,
+                                    sizeof(verified)) != RIN_MEDIA_DEMUX_OK ||
+            verified.tracks[0].codec_id !=
+            RIN_MEDIA_CODEC_OPUS)
+        return 0;
+    while (offset < source_bytes) {
+        size_t body_offset;
+        size_t index;
+        if (page_count++ >= 4096u ||
+            !ogg_page(data, source_bytes, offset, &page))
+            return 0;
+        if (first_page) {
+            if ((page.header_type & 0x02u) == 0u ||
+                (page.header_type & 0x01u) != 0u || page.sequence != 0u)
+                return 0;
+            serial = page.serial;
+            expected_sequence = page.sequence;
+            first_page = 0;
+        } else if (page.serial != serial || page.sequence != expected_sequence ||
+                   (page.header_type & 0x01u) != 0u) {
+            /* A continued packet is not a single caller-owned byte extent. */
+            return 0;
+        }
+        expected_sequence = page.sequence + 1u;
+        body_offset = page.payload;
+        packet_bytes = 0u;
+        for (index = 0u; index < page.segment_count; ++index) {
+            size_t segment_bytes = data[page.segment_table + index];
+            if (packet_bytes == 0u) packet_start = body_offset;
+            if (segment_bytes > 1024u * 1024u - packet_bytes)
+                return 0;
+            packet_bytes += segment_bytes;
+            body_offset += segment_bytes;
+            if (segment_bytes < 255u) {
+                if (packet_bytes == 0u) return 0;
+                if (header_packets == 0u) {
+                    if (packet_bytes < 19u ||
+                        memcmp(data + packet_start, "OpusHead", 8u) != 0)
+                        return 0;
+                } else if (header_packets == 1u) {
+                    if (packet_bytes < 8u ||
+                        memcmp(data + packet_start, "OpusTags", 8u) != 0)
+                        return 0;
+                } else {
+                    RinMediaDemuxPacketV1 packet;
+                    uint32_t duration;
+                    if (output->packet_count >= RIN_MEDIA_DEMUX_MAX_PACKETS ||
+                        !ogg_opus_packet_duration(data + packet_start,
+                                                  packet_bytes, &duration) ||
+                        UINT64_MAX - timestamp < duration)
+                        return 0;
+                    memset(&packet, 0, sizeof(packet));
+                    packet.byte_offset = (uint64_t)packet_start;
+                    packet.byte_size = (uint32_t)packet_bytes;
+                    packet.track_id = verified.tracks[0].track_id;
+                    packet.timestamp_ticks = timestamp;
+                    packet.duration_ticks = duration;
+                    output->packets[output->packet_count++] = packet;
+                    timestamp += duration;
+                }
+                ++header_packets;
+                packet_bytes = 0u;
+            }
+        }
+        if (packet_bytes != 0u) return 0;
+        offset = page.end;
+    }
+    return !first_page && header_packets >= 3u && output->packet_count != 0u;
+}
+
 typedef struct AdtsFrameHeader {
     size_t frame_bytes;
     uint32_t profile;
@@ -1963,6 +2069,7 @@ int rin_media_container_index_packets(
     if (info->container_id != RIN_MEDIA_CONTAINER_MP4 &&
         info->container_id != RIN_MEDIA_CONTAINER_WEBM &&
         info->container_id != RIN_MEDIA_CONTAINER_MATROSKA &&
+        info->container_id != RIN_MEDIA_CONTAINER_OGG &&
         info->container_id != RIN_MEDIA_CONTAINER_AVI &&
         info->container_id != RIN_MEDIA_CONTAINER_WAV &&
         info->container_id != RIN_MEDIA_CONTAINER_FLAC &&
@@ -1972,6 +2079,8 @@ int rin_media_container_index_packets(
     output->abi_version = RIN_MEDIA_DEMUX_ABI_V1;
     result = info->container_id == RIN_MEDIA_CONTAINER_MP4 ?
         mp4_index_packets(data, source_bytes, info, output) :
+        info->container_id == RIN_MEDIA_CONTAINER_OGG ?
+        ogg_opus_index_packets(data, source_bytes, info, output) :
         info->container_id == RIN_MEDIA_CONTAINER_AVI ?
         avi_index_packets(data, source_bytes, info, output) :
         info->container_id == RIN_MEDIA_CONTAINER_WAV ?
