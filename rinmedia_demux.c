@@ -1405,6 +1405,7 @@ static int ebml_track(const uint8_t* data, size_t begin, size_t end,
             return 0;
         if (id == UINT64_C(0xd7)) {
             uint64_t track_number;
+            if (got_number) return 0;
             if (element_end - payload == 0u || element_end - payload > 8u)
                 return 0;
             track_number = ebml_uint(data + payload, element_end - payload);
@@ -1413,6 +1414,7 @@ static int ebml_track(const uint8_t* data, size_t begin, size_t end,
             got_number = track->track_id != 0u;
         } else if (id == UINT64_C(0x83)) {
             uint64_t track_type;
+            if (got_type) return 0;
             if (element_end - payload == 0u || element_end - payload > 8u)
                 return 0;
             track_type = ebml_uint(data + payload, element_end - payload);
@@ -1422,6 +1424,7 @@ static int ebml_track(const uint8_t* data, size_t begin, size_t end,
                           RIN_MEDIA_DEMUX_TRACK_UNKNOWN;
             got_type = track->kind != RIN_MEDIA_DEMUX_TRACK_UNKNOWN;
         } else if (id == UINT64_C(0x86)) {
+            if (got_codec) return 0;
             got_codec = ebml_copy_codec(data + payload,
                                         element_end - payload, track);
         }
