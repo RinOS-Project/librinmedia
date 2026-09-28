@@ -89,6 +89,10 @@ typedef struct {
     /* ADPCM状態 */
     int16_t adpcm_predictor[2];
     int     adpcm_step_index[2];
+    size_t  adpcm_block_start;
+    uint32_t adpcm_block_frames;
+    uint32_t adpcm_frame;
+    uint8_t adpcm_block_active;
 } RWavContext;
 
 /* ═══════════════════════════════════════════════════════════════
@@ -599,40 +603,68 @@ static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_sa
         if (!rwav_checked_sample_count(num_samples, ctx->channels, &max_out))
             return RWAV_ERROR;
 
-        while (ctx->data_size - ctx->read_pos >= ctx->block_align &&
-               out_idx < max_out) {
-            const uint8_t* block = ctx->data + ctx->data_offset + ctx->read_pos;
-
-            /* ブロックヘッダー読み取り */
-            for (int ch = 0; ch < ctx->channels; ch++) {
-                ctx->adpcm_predictor[ch] =
-                    (int16_t)rwav_read_le16(block + (size_t)ch * 4u);
-                ctx->adpcm_step_index[ch] = block[(size_t)ch * 4u + 2u];
-                if (ctx->adpcm_step_index[ch] > 88) ctx->adpcm_step_index[ch] = 88;
+        while (out_idx < max_out) {
+            if (!ctx->adpcm_block_active) {
+                size_t header_bytes = (size_t)ctx->channels * 4u;
+                size_t data_bytes;
+                if (ctx->read_pos > ctx->data_size ||
+                    ctx->data_size - ctx->read_pos < ctx->block_align)
+                    break;
+                if (ctx->block_align < header_bytes)
+                    return RWAV_DATA_ERROR;
+                data_bytes = (size_t)ctx->block_align - header_bytes;
+                if (data_bytes == 0u || data_bytes > SIZE_MAX / 2u)
+                    return RWAV_DATA_ERROR;
+                ctx->adpcm_block_start = ctx->read_pos;
+                ctx->adpcm_block_frames =
+                    (uint32_t)(data_bytes * 2u / (size_t)ctx->channels + 1u);
+                ctx->adpcm_frame = 0u;
+                for (int ch = 0; ch < ctx->channels; ch++) {
+                    const uint8_t* block = ctx->data + ctx->data_offset +
+                                           ctx->adpcm_block_start;
+                    ctx->adpcm_predictor[ch] =
+                        (int16_t)rwav_read_le16(block + (size_t)ch * 4u);
+                    ctx->adpcm_step_index[ch] = block[(size_t)ch * 4u + 2u];
+                    if (ctx->adpcm_step_index[ch] > 88)
+                        return RWAV_DATA_ERROR;
+                }
+                ctx->adpcm_block_active = 1u;
             }
 
-            /* 最初のサンプル出力 */
-            for (int ch = 0; ch < ctx->channels && out_idx < max_out; ch++) {
-                output[out_idx++] = ctx->adpcm_predictor[ch];
-            }
-
-            /* データデコード */
-            const uint8_t* data_ptr = block + 4 * ctx->channels;
-            int data_bytes = ctx->block_align - 4 * ctx->channels;
-
-            for (int i = 0; i < data_bytes && out_idx < max_out; i++) {
-                int ch = (ctx->channels == 2) ? ((i / 4) & 1) : 0;
-                uint8_t byte = data_ptr[i];
-
-                output[out_idx++] = rwav_ima_decode_sample(byte & 0x0F,
-                    &ctx->adpcm_predictor[ch], &ctx->adpcm_step_index[ch]);
-                if (out_idx < max_out) {
-                    output[out_idx++] = rwav_ima_decode_sample((byte >> 4) & 0x0F,
-                        &ctx->adpcm_predictor[ch], &ctx->adpcm_step_index[ch]);
+            {
+                const uint8_t* block = ctx->data + ctx->data_offset +
+                                       ctx->adpcm_block_start;
+                uint32_t frame = ctx->adpcm_frame;
+                for (int ch = 0; ch < ctx->channels; ++ch) {
+                    if (frame == 0u) {
+                        output[out_idx++] = ctx->adpcm_predictor[ch];
+                    } else {
+                        size_t sample_index = (size_t)frame - 1u;
+                        size_t group = sample_index / 8u;
+                        size_t within = sample_index % 8u;
+                        size_t channel_stride = (size_t)ctx->channels * 4u;
+                        size_t byte_offset = channel_stride +
+                            group * channel_stride + (size_t)ch * 4u +
+                            within / 2u;
+                        uint8_t packed;
+                        int nibble;
+                        if (byte_offset >= (size_t)ctx->block_align)
+                            return RWAV_DATA_ERROR;
+                        packed = block[byte_offset];
+                        nibble = (within & 1u) != 0u
+                            ? (int)(packed >> 4u) : (int)(packed & 0x0fu);
+                        output[out_idx++] = rwav_ima_decode_sample(
+                            nibble, &ctx->adpcm_predictor[ch],
+                            &ctx->adpcm_step_index[ch]);
+                    }
+                }
+                ++ctx->adpcm_frame;
+                if (ctx->adpcm_frame == ctx->adpcm_block_frames) {
+                    ctx->read_pos = ctx->adpcm_block_start +
+                                    (size_t)ctx->block_align;
+                    ctx->adpcm_block_active = 0u;
                 }
             }
-
-            ctx->read_pos += ctx->block_align;
         }
         samples_read = out_idx / ctx->channels;
 
@@ -689,6 +721,9 @@ static inline int rwav_seek(RWavContext* ctx, uint32_t sample_pos) {
     if (ctx->read_pos > ctx->data_size) {
         ctx->read_pos = ctx->data_size;
     }
+    ctx->adpcm_block_active = 0u;
+    ctx->adpcm_block_frames = 0u;
+    ctx->adpcm_frame = 0u;
 
     return RWAV_OK;
 }
@@ -712,6 +747,10 @@ static inline int rwav_reset(RWavContext* ctx) {
     ctx->read_pos = 0;
     ctx->adpcm_predictor[0] = ctx->adpcm_predictor[1] = 0;
     ctx->adpcm_step_index[0] = ctx->adpcm_step_index[1] = 0;
+    ctx->adpcm_block_start = 0u;
+    ctx->adpcm_block_frames = 0u;
+    ctx->adpcm_frame = 0u;
+    ctx->adpcm_block_active = 0u;
     return RWAV_OK;
 }
 

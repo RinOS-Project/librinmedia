@@ -36,7 +36,9 @@ scratch, and output remain caller-owned.
 The legacy `rinwav.h` S16 reader sign-extends 24-bit PCM before its bounded
 8-bit downshift and rejects non-finite IEEE float samples before conversion;
 the latter clears the requested output span and leaves the read position
-unchanged on failure.
+unchanged on failure. IMA-ADPCM blocks are decoded into interleaved stereo
+frames and retain bounded in-block state across partial reads instead of
+discarding the unread suffix.
 
 The EBML demux accepts unknown-size only for the bounded Segment/Cluster
 masters used by the packet path. TrackEntry, Info, Timecode, and SimpleBlock
