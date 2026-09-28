@@ -155,6 +155,15 @@ static int value_in_range(int64_t value, uint32_t bits)
            value <= maximum;
 }
 
+/* FLAC's mid/side reconstruction uses an arithmetic right shift.  C integer
+ * division truncates negative odd values toward zero, so spell out the
+ * floor-by-two operation for the bounded side sample range. */
+static int64_t arithmetic_shift_right_one(int64_t value)
+{
+    if (value >= 0) return value / 2;
+    return -(((-value) + 1) / 2);
+}
+
 static int read_rice(BitReader* reader, unsigned parameter, int64_t* value)
 {
     uint32_t quotient;
@@ -464,8 +473,9 @@ int rin_media_flac_decode_frame(
         else if (channel_assignment == 10u) {
             const int64_t side = values[1];
             const int64_t mid = values[0];
-            values[0] = mid + (side & 1) + side / 2;
-            values[1] = mid - side / 2;
+            const int64_t side_shifted = arithmetic_shift_right_one(side);
+            values[0] = mid + (side & 1) + side_shifted;
+            values[1] = mid - side_shifted;
         }
         for (channel = 0u; channel < channels; ++channel)
             if (!value_in_range(values[channel], request->bits_per_sample))

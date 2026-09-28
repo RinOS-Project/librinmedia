@@ -29,7 +29,8 @@ is rejected failure-atomically.
 caller supplies a bounded `int64_t` scratch arena and an `int32_t` interleaved
 output span; the decoder verifies the frame header and frame CRC, supports
 constant/verbatim/fixed/LPC subframes with Rice residuals and stereo channel
-decorrelation, and clears the output before publishing any failure. Frames,
+decorrelation (including arithmetic right-shift semantics for negative odd
+side samples), and clears the output before publishing any failure. Frames,
 scratch, and output remain caller-owned.
 
 The EBML demux accepts unknown-size only for the bounded Segment/Cluster
