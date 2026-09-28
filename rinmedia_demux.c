@@ -1343,6 +1343,18 @@ static uint64_t ebml_uint(const uint8_t* data, size_t length)
     return value;
 }
 
+static int ebml_nonnegative_finite(const uint8_t* data, size_t length)
+{
+    uint64_t raw;
+    uint64_t exponent;
+    if (!data || (length != 4u && length != 8u)) return 0;
+    raw = length == 4u ? (uint64_t)read_be32(data) : read_be64(data);
+    if ((raw >> (length == 4u ? 31u : 63u)) != 0u) return 0;
+    exponent = length == 4u ? (raw >> 23u) & UINT64_C(0xff) :
+                              (raw >> 52u) & UINT64_C(0x7ff);
+    return exponent != (length == 4u ? UINT64_C(0xff) : UINT64_C(0x7ff));
+}
+
 static int ebml_copy_codec(const uint8_t* data, size_t length,
                            RinMediaDemuxTrackV1* track)
 {
@@ -1463,6 +1475,11 @@ static int webm_find_tracks(const uint8_t* data, size_t begin, size_t end,
                                                info_end - info_payload);
                     if (scale == 0u || scale > UINT32_MAX) return 0;
                     output->time_scale = (uint32_t)scale;
+                } else if (info_id == UINT64_C(0x4489) &&
+                           !ebml_nonnegative_finite(
+                               data + info_payload,
+                               info_end - info_payload)) {
+                    return 0;
                 }
                 info_offset = info_end;
             }
