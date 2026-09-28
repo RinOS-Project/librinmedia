@@ -29,6 +29,8 @@ The EBML demux accepts unknown-size only for the bounded Segment/Cluster
 masters used by the packet path. TrackEntry, Info, Timecode, and SimpleBlock
 elements must carry a finite size; an unknown-size leaf is rejected before
 metadata or packet output is published.
+The top-level WebM/Matroska inspect consumes exactly one Segment and rejects
+trailing bytes or a second Segment instead of silently ignoring them.
 TrackNumber values above `UINT32_MAX` are also rejected instead of being
 truncated into a colliding public track ID.
 Duplicate MP4 `track_ID` and WebM/Matroska `TrackNumber` values are rejected

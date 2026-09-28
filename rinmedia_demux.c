@@ -1523,10 +1523,10 @@ static int webm_inspect(const uint8_t* data, size_t source_bytes,
             (unknown_size && id != UINT64_C(0x18538067)))
             return RIN_MEDIA_DEMUX_INVALID;
         if (id == UINT64_C(0x18538067)) {
+            if (found_segment) return RIN_MEDIA_DEMUX_INVALID;
             found_segment = 1;
             if (!webm_find_tracks(data, payload, end, output, 0))
                 return RIN_MEDIA_DEMUX_INVALID;
-            break;
         }
         offset = end;
     }
