@@ -605,20 +605,36 @@ static int ogg_inspect(const uint8_t* data, size_t source_bytes,
     return RIN_MEDIA_DEMUX_OK;
 }
 
-/* This is an extent-only Opus subset.  It deliberately admits only the
- * config-0, one- or two-frame TOC forms, whose 10 ms frames have a fixed
- * 48 kHz duration.  Code-2's RFC 6716 one/two-byte first-frame length and
- * 1275-byte per-frame bound are checked without decoding packet bytes;
- * every other TOC, page-spanning packet, and Vorbis packet remains
- * Unsupported. */
+/* This is an extent-only Opus subset.  It admits the bounded C=0/1/2 TOC
+ * forms and derives their known RFC 6716 frame duration without decoding
+ * packet bytes.  Code-2's one/two-byte first-frame length and the 1275-byte
+ * per-frame bound are checked; C=3, page-spanning packets, and Vorbis
+ * packets remain Unsupported. */
+static int ogg_opus_frame_duration(uint32_t config, uint32_t* frame_ticks)
+{
+    if (!frame_ticks || config > 31u) return 0;
+    if (config < 12u) {
+        static const uint32_t silk_ticks[4] = {480u, 960u, 1920u, 2880u};
+        *frame_ticks = silk_ticks[config & 3u];
+    } else if (config < 16u) {
+        *frame_ticks = (config & 1u) != 0u ? 960u : 480u;
+    } else {
+        static const uint32_t celt_ticks[4] = {120u, 240u, 480u, 960u};
+        *frame_ticks = celt_ticks[config & 3u];
+    }
+    return 1;
+}
+
 static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
                                     uint32_t* duration_ticks)
 {
     const size_t max_frame_bytes = 1275u;
+    uint32_t frame_ticks;
     uint32_t frame_code;
     uint32_t frame_count;
     if (!packet || !duration_ticks || packet_bytes < 2u ||
-        (packet[0] >> 3u) != 0u || (packet[0] & 0x04u) != 0u)
+        !ogg_opus_frame_duration((uint32_t)(packet[0] >> 3u),
+                                 &frame_ticks))
         return 0;
     frame_code = (uint32_t)(packet[0] & 0x03u);
     if (frame_code == 0u) {
@@ -657,7 +673,7 @@ static int ogg_opus_packet_duration(const uint8_t* packet, size_t packet_bytes,
     }
     if (frame_count == 0u || packet_bytes < 1u + frame_count)
         return 0;
-    *duration_ticks = frame_count * 480u;
+    *duration_ticks = frame_count * frame_ticks;
     return 1;
 }
 
