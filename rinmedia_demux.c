@@ -1294,7 +1294,8 @@ static int ebml_vint(const uint8_t* data, size_t length, uint64_t* value,
 }
 
 static int ebml_element(const uint8_t* data, size_t limit, size_t offset,
-                        uint64_t* id, size_t* payload, size_t* end)
+                        uint64_t* id, size_t* payload, size_t* end,
+                        int* unknown_size_out)
 {
     uint64_t raw_id;
     uint64_t size;
@@ -1315,6 +1316,7 @@ static int ebml_element(const uint8_t* data, size_t limit, size_t offset,
         if (size > (uint64_t)(limit - *payload)) return 0;
         *end = *payload + (size_t)size;
     }
+    if (unknown_size_out != NULL) *unknown_size_out = unknown_size;
     *id = 0u;
     for (size_t index = 0u; index < id_bytes; ++index)
         *id = (*id << 8u) | data[offset + index];
@@ -1352,7 +1354,9 @@ static int ebml_track(const uint8_t* data, size_t begin, size_t end,
         uint64_t id;
         size_t payload;
         size_t element_end;
-        if (!ebml_element(data, end, offset, &id, &payload, &element_end))
+        int unknown_size = 0;
+        if (!ebml_element(data, end, offset, &id, &payload, &element_end,
+                          &unknown_size) || unknown_size)
             return 0;
         if (id == UINT64_C(0xd7)) {
             if (element_end - payload == 0u || element_end - payload > 8u)
@@ -1388,7 +1392,11 @@ static int webm_find_tracks(const uint8_t* data, size_t begin, size_t end,
         uint64_t id;
         size_t payload;
         size_t element_end;
-        if (!ebml_element(data, end, offset, &id, &payload, &element_end))
+        int unknown_size = 0;
+        if (!ebml_element(data, end, offset, &id, &payload, &element_end,
+                          &unknown_size) ||
+            (unknown_size && id != UINT64_C(0x18538067) &&
+             id != UINT64_C(0x1f43b675)))
             return 0;
         if (id == UINT64_C(0x1654ae6b)) { /* Tracks */
             size_t track_offset = payload;
@@ -1397,8 +1405,11 @@ static int webm_find_tracks(const uint8_t* data, size_t begin, size_t end,
                 size_t track_payload;
                 size_t track_end;
                 RinMediaDemuxTrackV1 track;
+                int track_unknown_size = 0;
                 if (!ebml_element(data, element_end, track_offset, &track_id,
-                                  &track_payload, &track_end))
+                                  &track_payload, &track_end,
+                                  &track_unknown_size) ||
+                    track_unknown_size)
                     return 0;
                 if (track_id == UINT64_C(0xae)) { /* TrackEntry */
                     if (output->track_count >= RIN_MEDIA_DEMUX_MAX_TRACKS)
@@ -1416,8 +1427,10 @@ static int webm_find_tracks(const uint8_t* data, size_t begin, size_t end,
                 uint64_t info_id;
                 size_t info_payload;
                 size_t info_end;
+                int info_unknown_size = 0;
                 if (!ebml_element(data, element_end, info_offset, &info_id,
-                                  &info_payload, &info_end))
+                                  &info_payload, &info_end,
+                                  &info_unknown_size) || info_unknown_size)
                     return 0;
                 if (info_id == UINT64_C(0x2ad7b1) &&
                     info_end - info_payload > 0u &&
@@ -1447,18 +1460,23 @@ static int webm_inspect(const uint8_t* data, size_t source_bytes,
     size_t header_end;
     size_t offset;
     int found_segment = 0;
+    int unknown_size = 0;
     if (rin_media_container_probe(data, source_bytes, &container) != 0 ||
         (container != RIN_MEDIA_CONTAINER_WEBM &&
          container != RIN_MEDIA_CONTAINER_MATROSKA))
         return RIN_MEDIA_DEMUX_INVALID;
-    if (!ebml_element(data, source_bytes, 0u, &id, &offset, &header_end) ||
+    if (!ebml_element(data, source_bytes, 0u, &id, &offset, &header_end,
+                      &unknown_size) || unknown_size ||
         id != UINT64_C(0x1a45dfa3))
         return RIN_MEDIA_DEMUX_INVALID;
     offset = header_end;
     while (offset < source_bytes) {
         size_t payload;
         size_t end;
-        if (!ebml_element(data, source_bytes, offset, &id, &payload, &end))
+        unknown_size = 0;
+        if (!ebml_element(data, source_bytes, offset, &id, &payload, &end,
+                          &unknown_size) ||
+            (unknown_size && id != UINT64_C(0x18538067)))
             return RIN_MEDIA_DEMUX_INVALID;
         if (id == UINT64_C(0x18538067)) {
             found_segment = 1;
@@ -2055,7 +2073,9 @@ static int webm_index_cluster(const uint8_t* data, size_t begin, size_t end,
         uint64_t id;
         size_t payload;
         size_t element_end;
-        if (!ebml_element(data, end, offset, &id, &payload, &element_end))
+        int unknown_size = 0;
+        if (!ebml_element(data, end, offset, &id, &payload, &element_end,
+                          &unknown_size) || unknown_size)
             return 0;
         if (id == UINT64_C(0xe7)) {
             size_t length = element_end - payload;
@@ -2120,19 +2140,26 @@ static int webm_index_packets(const uint8_t* data, size_t source_bytes,
     size_t payload;
     size_t end;
     size_t offset;
-    if (!ebml_element(data, source_bytes, 0u, &id, &payload, &end) ||
+    int unknown_size = 0;
+    if (!ebml_element(data, source_bytes, 0u, &id, &payload, &end,
+                      &unknown_size) || unknown_size ||
         id != UINT64_C(0x1a45dfa3)) return 0;
     offset = end;
     while (offset < source_bytes) {
-        if (!ebml_element(data, source_bytes, offset, &id, &payload, &end))
+        unknown_size = 0;
+        if (!ebml_element(data, source_bytes, offset, &id, &payload, &end,
+                          &unknown_size) ||
+            (unknown_size && id != UINT64_C(0x18538067)))
             return 0;
         if (id == UINT64_C(0x18538067)) {
             size_t segment = payload;
             while (segment < end) {
                 size_t child_payload;
                 size_t child_end;
+                int child_unknown_size = 0;
                 if (!ebml_element(data, end, segment, &id, &child_payload,
-                                  &child_end))
+                                  &child_end, &child_unknown_size) ||
+                    (child_unknown_size && id != UINT64_C(0x1f43b675)))
                     return 0;
                 if (id == UINT64_C(0x1f43b675) &&
                     !webm_index_cluster(data, child_payload, child_end,

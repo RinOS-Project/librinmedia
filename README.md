@@ -24,3 +24,8 @@ sampling-frequency and channel-configuration fields, and reports SBR/PS
 extension metadata without decoding payloads or taking filesystem/service
 ownership. Invalid, truncated, oversized, or unsupported configuration input
 is rejected failure-atomically.
+
+The EBML demux accepts unknown-size only for the bounded Segment/Cluster
+masters used by the packet path. TrackEntry, Info, Timecode, and SimpleBlock
+elements must carry a finite size; an unknown-size leaf is rejected before
+metadata or packet output is published.
