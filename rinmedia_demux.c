@@ -328,10 +328,12 @@ static int mp4_inspect(const uint8_t* data, size_t source_bytes,
         if (!iso_box(data, source_bytes, offset, &box))
             return RIN_MEDIA_DEMUX_INVALID;
         if (box.type == UINT32_C(0x66747970)) { /* ftyp */
+            if (found_ftyp) return RIN_MEDIA_DEMUX_UNSUPPORTED;
             if (box.end - box.payload < 8u) return RIN_MEDIA_DEMUX_INVALID;
             found_ftyp = 1;
         } else if (box.type == UINT32_C(0x6d6f6f76)) { /* moov */
             size_t child = box.payload;
+            if (found_moov) return RIN_MEDIA_DEMUX_UNSUPPORTED;
             found_moov = 1;
             while (child < box.end) {
                 BoxView trak_box;
