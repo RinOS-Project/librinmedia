@@ -74,6 +74,8 @@ typedef struct RinMediaSessionInfoV1 {
 typedef struct RinMediaSessionCommandMessageV1 {
     uint32_t command;
     uint32_t reserved0;
+    /* Desktop dispatch requests carry the revision returned by QUERY_ACTIVE.
+     * Publisher polls receive the broker-assigned command revision here. */
     uint64_t revision;
 } RinMediaSessionCommandMessageV1;
 

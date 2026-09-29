@@ -244,7 +244,7 @@ bool MediaSessionDesktopClient::dispatch(
     uint32_t request_id = 1u;
     error_.clear();
     if (session_id == 0u || command.reserved0 != 0u ||
-        command.revision != 0u ||
+        command.revision == 0u ||
         command.command < RIN_MEDIA_SESSION_COMMAND_PLAY_PAUSE ||
         command.command > RIN_MEDIA_SESSION_COMMAND_STOP) {
         error_ = "Invalid media session command";

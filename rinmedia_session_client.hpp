@@ -43,6 +43,7 @@ class MediaSessionDesktopClient final {
 public:
     bool queryActive(RinMediaSessionPublishReplyV1* session_out,
                      RinMediaSessionInfoV1* info_out);
+    /* command.revision must be the nonzero revision returned by queryActive. */
     bool dispatch(uint64_t session_id,
                   RinMediaSessionCommandMessageV1 command);
     const std::string& lastError() const { return error_; }
