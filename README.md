@@ -14,6 +14,11 @@ one validated extent into a caller-owned buffer with a 1 MiB bound and a
 failure-atomic output/size contract. It does not open paths or descriptors and
 does not grant filesystem, File Portal, codec, or service authority.
 
+The public demux inspect and packet-index entry points clear only the caller's
+reported output span before validation. An undersized `output_size` therefore
+cannot make a failure path write the full private structure past the caller's
+buffer; valid full-size outputs remain failure-atomic.
+
 `rin_media_container_read_packet()` provides the same contract for a caller's
 opaque source callback. Each callback request is capped at 64 KiB, short reads
 are retried, and callback failure, stall, or an oversized report clears the

@@ -1681,13 +1681,20 @@ static int webm_inspect(const uint8_t* data, size_t source_bytes,
     return RIN_MEDIA_DEMUX_OK;
 }
 
+static void clear_bounded(void* output, size_t output_size, size_t object_size)
+{
+    if (output == NULL || output_size == 0u) return;
+    if (output_size > object_size) output_size = object_size;
+    memset(output, 0, output_size);
+}
+
 int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
                                 RinMediaDemuxInfoV1* output,
                                 size_t output_size)
 {
     int result;
     uint32_t container = 0u;
-    if (output != NULL) memset(output, 0, sizeof(*output));
+    clear_bounded(output, output_size, sizeof(*output));
     if (data == NULL || source_bytes == 0u ||
         source_bytes > RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES || output == NULL)
         return RIN_MEDIA_DEMUX_INVALID;
@@ -1710,7 +1717,8 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
         result = mp4_inspect(data, source_bytes, output);
     else
         result = webm_inspect(data, source_bytes, output);
-    if (result != RIN_MEDIA_DEMUX_OK) memset(output, 0, sizeof(*output));
+    if (result != RIN_MEDIA_DEMUX_OK)
+        clear_bounded(output, output_size, sizeof(*output));
     return result;
 }
 
@@ -2458,7 +2466,7 @@ int rin_media_container_index_packets(
     RinMediaDemuxPacketTableV1* output, size_t output_size)
 {
     int result;
-    if (output != NULL) memset(output, 0, sizeof(*output));
+    clear_bounded(output, output_size, sizeof(*output));
     if (!data || source_bytes == 0u ||
         source_bytes > RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES || !info ||
         info_size < sizeof(*info) || info->struct_size != sizeof(*info) ||
@@ -2493,7 +2501,7 @@ int rin_media_container_index_packets(
         adts_index_packets(data, source_bytes, info, output) :
         webm_index_packets(data, source_bytes, info, output);
     if (!result || output->packet_count == 0u) {
-        memset(output, 0, sizeof(*output));
+        clear_bounded(output, output_size, sizeof(*output));
         return RIN_MEDIA_DEMUX_UNSUPPORTED;
     }
     sort_packets(output);
