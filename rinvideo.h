@@ -484,7 +484,8 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
         size_t chunk_size;
 
         int ret = rvid_get_audio_chunk(player, chunk, &chunk_data, &chunk_size);
-        if (ret != RVID_OK) break;
+        if (ret != RVID_OK)
+            return ret == RVID_END_OF_FILE ? RVID_END_OF_FILE : RVID_ERROR;
 
         size_t chunk_sample_count = chunk_size / (size_t)bytes_per_sample;
         if (chunk_sample_count > (size_t)UINT32_MAX)

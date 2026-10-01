@@ -37,7 +37,8 @@ The legacy public PCM time query saturates its time-to-sample conversion,
 rejects audio chunk-size and sample-count overflow, and reads 16-bit PCM as
 little-endian bytes instead of relying on caller-buffer alignment. Its output
 remains caller-owned and the query does not acquire filesystem, device, or
-codec authority.
+codec authority; malformed or unavailable AVI audio chunks remain errors
+instead of being reported as end-of-file.
 
 ## Public API contract
 
