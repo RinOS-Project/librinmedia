@@ -12,13 +12,16 @@ extern "C" {
 #define RIN_MEDIA_DEMUX_MAX_TRACKS 32u
 #define RIN_MEDIA_DEMUX_MAX_PACKETS 256u
 #define RIN_MEDIA_DEMUX_MAX_PACKET_BYTES (1024u * 1024u)
+#define RIN_MEDIA_DEMUX_PACKET_READ_CHUNK_BYTES (64u * 1024u)
 #define RIN_MEDIA_DEMUX_CODEC_NAME_MAX 32u
 
 enum {
     RIN_MEDIA_DEMUX_OK = 0,
     RIN_MEDIA_DEMUX_INVALID = -1,
     RIN_MEDIA_DEMUX_UNSUPPORTED = -2,
-    RIN_MEDIA_DEMUX_OUTPUT_TOO_SMALL = -3
+    RIN_MEDIA_DEMUX_OUTPUT_TOO_SMALL = -3,
+    RIN_MEDIA_DEMUX_SOURCE_FAILED = -4,
+    RIN_MEDIA_DEMUX_SOURCE_STALLED = -5
 };
 
 enum {
@@ -75,6 +78,14 @@ typedef struct RinMediaDemuxPacketTableV1 {
     RinMediaDemuxPacketV1 packets[RIN_MEDIA_DEMUX_MAX_PACKETS];
 } RinMediaDemuxPacketTableV1;
 
+/* A source owner supplies bytes for one bounded packet read.  It may return
+ * fewer bytes than requested, but must return zero bytes only at end/error
+ * and must never write beyond capacity.  The owner retains all source
+ * authority; this callback receives only an opaque context and byte extent. */
+typedef int (*RinMediaDemuxPacketReadV1)(
+    void* context, uint64_t byte_offset, uint8_t* output, size_t capacity,
+    size_t* bytes_read);
+
 /* Inspect bounded container metadata only.  Packet bytes, filesystem paths,
  * codec state, and backend-specific ownership are not part of this API. */
 int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
@@ -112,6 +123,14 @@ int rin_media_container_copy_packet(
     const uint8_t* data, size_t source_bytes,
     const RinMediaDemuxPacketV1* packet, size_t packet_size,
     uint8_t* output, size_t output_capacity, size_t* bytes_copied);
+
+/* Read one indexed packet through a caller-owned source callback.  Reads are
+ * capped at 64 KiB per callback and 1 MiB per packet.  The API never retains
+ * the callback or context and never opens a path, descriptor, or service. */
+int rin_media_container_read_packet(
+    const RinMediaDemuxPacketV1* packet, size_t packet_size,
+    RinMediaDemuxPacketReadV1 read_source, void* context,
+    uint8_t* output, size_t output_capacity, size_t* bytes_read);
 
 #ifdef __cplusplus
 }

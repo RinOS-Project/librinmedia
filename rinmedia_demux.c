@@ -2530,3 +2530,59 @@ int rin_media_container_copy_packet(
     *bytes_copied = (size_t)packet->byte_size;
     return RIN_MEDIA_DEMUX_OK;
 }
+
+int rin_media_container_read_packet(
+    const RinMediaDemuxPacketV1* packet, size_t packet_size,
+    RinMediaDemuxPacketReadV1 read_source, void* context,
+    uint8_t* output, size_t output_capacity, size_t* bytes_read)
+{
+    size_t offset = 0u;
+    size_t clear_bytes;
+    if (!bytes_read) {
+        clear_bytes = output_capacity < RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ?
+            output_capacity : RIN_MEDIA_DEMUX_MAX_PACKET_BYTES;
+        if (output && clear_bytes != 0u) memset(output, 0, clear_bytes);
+        return RIN_MEDIA_DEMUX_INVALID;
+    }
+    *bytes_read = 0u;
+    if (!packet || packet_size < sizeof(*packet) || !read_source ||
+        packet->byte_size == 0u ||
+        packet->byte_size > RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ||
+        packet->byte_offset > UINT64_MAX - (uint64_t)packet->byte_size) {
+        clear_bytes = output_capacity < RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ?
+            output_capacity : RIN_MEDIA_DEMUX_MAX_PACKET_BYTES;
+        if (output && clear_bytes != 0u) memset(output, 0, clear_bytes);
+        return RIN_MEDIA_DEMUX_INVALID;
+    }
+    if (!output || output_capacity < (size_t)packet->byte_size) {
+        clear_bytes = output_capacity < RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ?
+            output_capacity : RIN_MEDIA_DEMUX_MAX_PACKET_BYTES;
+        if (output && clear_bytes != 0u) memset(output, 0, clear_bytes);
+        return RIN_MEDIA_DEMUX_OUTPUT_TOO_SMALL;
+    }
+    while (offset < (size_t)packet->byte_size) {
+        size_t request = (size_t)packet->byte_size - offset;
+        size_t received = 0u;
+        int result;
+        if (request > RIN_MEDIA_DEMUX_PACKET_READ_CHUNK_BYTES)
+            request = RIN_MEDIA_DEMUX_PACKET_READ_CHUNK_BYTES;
+        result = read_source(
+            context, packet->byte_offset + (uint64_t)offset,
+            output + offset, request, &received);
+        if (result != 0) {
+            memset(output, 0, (size_t)packet->byte_size);
+            return RIN_MEDIA_DEMUX_SOURCE_FAILED;
+        }
+        if (received > request) {
+            memset(output, 0, (size_t)packet->byte_size);
+            return RIN_MEDIA_DEMUX_INVALID;
+        }
+        if (received == 0u) {
+            memset(output, 0, (size_t)packet->byte_size);
+            return RIN_MEDIA_DEMUX_SOURCE_STALLED;
+        }
+        offset += received;
+    }
+    *bytes_read = offset;
+    return RIN_MEDIA_DEMUX_OK;
+}
