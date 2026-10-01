@@ -208,6 +208,33 @@ static inline int rvid_decode_raw_frame(const uint8_t* data, size_t size,
     return RVID_OK;
 }
 
+/*
+ * Convert the public playback clock without allowing an out-of-range
+ * floating-point-to-uint32 conversion.  Malformed or extremely small frame
+ * rates can otherwise produce infinity before the result is cast.
+ */
+static inline uint32_t rvid_frame_time_ms(uint32_t frame, float fps)
+{
+    double value;
+
+    if (!(fps > 0.0f)) return 0u;
+    value = (double)frame * 1000.0 / (double)fps;
+    if (!(value > 0.0)) return 0u;
+    if (value >= (double)UINT32_MAX) return UINT32_MAX;
+    return (uint32_t)value;
+}
+
+static inline uint32_t rvid_frame_for_time(uint32_t time_ms, float fps)
+{
+    double value;
+
+    if (!(fps > 0.0f)) return 0u;
+    value = (double)time_ms * (double)fps / 1000.0;
+    if (!(value > 0.0)) return 0u;
+    if (value >= (double)UINT32_MAX) return UINT32_MAX;
+    return (uint32_t)value;
+}
+
 /* ═══════════════════════════════════════════════════════════════
  * 公開API
  * ═══════════════════════════════════════════════════════════════*/
@@ -371,10 +398,11 @@ static inline int rvid_next_frame(RVidPlayer* player, uint32_t* pixels,
                                  pixel_capacity,
                                  max_width, max_height);
     if (ret == RVID_OK) {
-        player->current_frame++;
+        if (player->current_frame != UINT32_MAX)
+            player->current_frame++;
         if (player->video_info.fps > 0) {
-            player->current_time_ms = (uint32_t)(player->current_frame * 1000.0f /
-                                                  player->video_info.fps);
+            player->current_time_ms = rvid_frame_time_ms(
+                player->current_frame, player->video_info.fps);
         }
 
         /* ループ処理 */
@@ -521,7 +549,8 @@ static inline int rvid_seek_frame(RVidPlayer* player, uint32_t frame_num) {
     }
     player->current_frame = frame_num;
     if (player->video_info.fps > 0) {
-        player->current_time_ms = (uint32_t)(frame_num * 1000.0f / player->video_info.fps);
+        player->current_time_ms = rvid_frame_time_ms(
+            frame_num, player->video_info.fps);
     }
     return RVID_OK;
 }
@@ -531,7 +560,7 @@ static inline int rvid_seek_frame(RVidPlayer* player, uint32_t frame_num) {
  */
 static inline int rvid_seek_ms(RVidPlayer* player, uint32_t time_ms) {
     if (!player || player->video_info.fps <= 0) return RVID_ERROR;
-    uint32_t frame = (uint32_t)(time_ms * player->video_info.fps / 1000.0f);
+    uint32_t frame = rvid_frame_for_time(time_ms, player->video_info.fps);
     return rvid_seek_frame(player, frame);
 }
 
@@ -597,8 +626,8 @@ static inline int rvid_update(RVidPlayer* player, uint32_t elapsed_ms) {
     if (target_frame >= player->video_info.total_frames) {
         if (player->loop) {
             target_frame = target_frame % player->video_info.total_frames;
-            player->current_time_ms = (uint32_t)(target_frame * 1000.0f /
-                                       player->video_info.fps);
+            player->current_time_ms = rvid_frame_time_ms(
+                target_frame, player->video_info.fps);
         } else {
             target_frame = player->video_info.total_frames - 1;
         }

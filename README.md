@@ -27,9 +27,11 @@ retained and is not a filesystem or service owner.
 
 The public `rvid_update()` playback clock saturates its millisecond counter at
 `UINT32_MAX` and rejects empty or non-positive-fps metadata before computing a
-target frame. This prevents long-running pure playback state from wrapping
-backward; decoder, filesystem, device, and hardware ownership remain outside
-the model.
+target frame. The public seek and frame-advance paths use the same bounded
+conversion, so malformed or extreme frame rates cannot turn a floating-point
+infinity into an out-of-range integer or wrap the frame counter. This prevents
+long-running pure playback state from wrapping backward; decoder, filesystem,
+device, and hardware ownership remain outside the model.
 
 ## Public API contract
 
