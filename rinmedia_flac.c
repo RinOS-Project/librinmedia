@@ -41,13 +41,85 @@ static uint16_t crc16(const uint8_t* data, size_t length)
     return result;
 }
 
+static int add_i64(int64_t left, int64_t right, int64_t* result)
+{
+    if (result == NULL) return 0;
+    if ((right > 0 && left > INT64_MAX - right) ||
+        (right < 0 && left < INT64_MIN - right))
+        return 0;
+    *result = left + right;
+    return 1;
+}
+
+static int subtract_i64(int64_t left, int64_t right, int64_t* result)
+{
+    if (result == NULL) return 0;
+    if ((right > 0 && left < INT64_MIN + right) ||
+        (right < 0 && left > INT64_MAX + right))
+        return 0;
+    *result = left - right;
+    return 1;
+}
+
+static int multiply_i64(int64_t left, int64_t right, int64_t* result)
+{
+    if (result == NULL) return 0;
+    if (left == 0 || right == 0) {
+        *result = 0;
+        return 1;
+    }
+    if (left == -1) {
+        if (right == INT64_MIN) return 0;
+        *result = -right;
+        return 1;
+    }
+    if (right == -1) {
+        if (left == INT64_MIN) return 0;
+        *result = -left;
+        return 1;
+    }
+    if (left > 0) {
+        if (right > 0) {
+            if (left > INT64_MAX / right) return 0;
+        } else if (right < INT64_MIN / left) {
+            return 0;
+        }
+    } else if (right > 0) {
+        if (left < INT64_MIN / right) return 0;
+    } else if (left < INT64_MAX / right) {
+        return 0;
+    }
+    *result = left * right;
+    return 1;
+}
+
+static int arithmetic_shift_right(int64_t value, unsigned amount,
+                                  int64_t* result)
+{
+    int64_t divisor;
+    int64_t quotient;
+    if (result == NULL || amount >= 63u) return 0;
+    if (amount == 0u) {
+        *result = value;
+        return 1;
+    }
+    divisor = INT64_C(1) << amount;
+    quotient = value / divisor;
+    if (value < 0 && value % divisor != 0) --quotient;
+    *result = quotient;
+    return 1;
+}
+
 static int read_bits64(BitReader* reader, unsigned count, uint64_t* value)
 {
     uint64_t result = 0u;
+    size_t total_bits;
     unsigned index;
-    if (reader == NULL || value == NULL || count > 64u ||
-        reader->bit > reader->bytes * 8u ||
-        count > reader->bytes * 8u - reader->bit)
+    if (reader == NULL || reader->data == NULL || value == NULL ||
+        count > 64u || reader->bytes > SIZE_MAX / 8u)
+        return 0;
+    total_bits = reader->bytes * 8u;
+    if (reader->bit > total_bits || (size_t)count > total_bits - reader->bit)
         return 0;
     for (index = 0u; index < count; ++index) {
         const size_t bit = reader->bit++;
@@ -160,8 +232,9 @@ static int value_in_range(int64_t value, uint32_t bits)
  * floor-by-two operation for the bounded side sample range. */
 static int64_t arithmetic_shift_right_one(int64_t value)
 {
-    if (value >= 0) return value / 2;
-    return -(((-value) + 1) / 2);
+    int64_t result = value / 2;
+    if (value < 0 && value % 2 != 0) --result;
+    return result;
 }
 
 static int read_rice(BitReader* reader, unsigned parameter, int64_t* value)
@@ -261,20 +334,35 @@ static int decode_subframe(BitReader* reader, int64_t* samples,
         if (!decode_residuals(reader, samples, block_samples, order)) return 0;
         for (index = order; index < block_samples; ++index) {
             int64_t prediction;
+            int64_t term;
             switch (order) {
             case 0u: prediction = 0; break;
             case 1u: prediction = samples[index - 1u]; break;
-            case 2u: prediction = 2 * samples[index - 1u] -
-                                  samples[index - 2u]; break;
-            case 3u: prediction = 3 * samples[index - 1u] -
-                                  3 * samples[index - 2u] +
-                                  samples[index - 3u]; break;
-            default: prediction = 4 * samples[index - 1u] -
-                                  6 * samples[index - 2u] +
-                                  4 * samples[index - 3u] -
-                                  samples[index - 4u]; break;
+            case 2u:
+                if (!multiply_i64(2, samples[index - 1u], &term) ||
+                    !subtract_i64(term, samples[index - 2u], &prediction))
+                    return 0;
+                break;
+            case 3u:
+                if (!multiply_i64(3, samples[index - 1u], &term) ||
+                    !multiply_i64(3, samples[index - 2u], &prediction) ||
+                    !subtract_i64(term, prediction, &prediction) ||
+                    !add_i64(prediction, samples[index - 3u], &prediction))
+                    return 0;
+                break;
+            default:
+                if (!multiply_i64(4, samples[index - 1u], &term) ||
+                    !multiply_i64(6, samples[index - 2u], &prediction) ||
+                    !subtract_i64(term, prediction, &prediction) ||
+                    !multiply_i64(4, samples[index - 3u], &term) ||
+                    !add_i64(prediction, term, &prediction) ||
+                    !subtract_i64(prediction, samples[index - 4u],
+                                  &prediction))
+                    return 0;
+                break;
             }
-            samples[index] += prediction;
+            if (!add_i64(samples[index], prediction, &samples[index]))
+                return 0;
         }
     } else if (type >= 32u) {
         const uint32_t order = (type & 31u) + 1u;
@@ -305,33 +393,34 @@ static int decode_subframe(BitReader* reader, int64_t* samples,
             int64_t sum = 0;
             uint32_t coefficient_index;
             for (coefficient_index = 0u; coefficient_index < order;
-                 ++coefficient_index)
-                sum += (int64_t)coefficients[coefficient_index] *
-                       samples[index - coefficient_index - 1u];
+                 ++coefficient_index) {
+                int64_t product;
+                if (!multiply_i64((int64_t)coefficients[coefficient_index],
+                                  samples[index - coefficient_index - 1u],
+                                  &product) ||
+                    !add_i64(sum, product, &sum))
+                    return 0;
+            }
             if (shift >= 0) {
                 const unsigned amount = (unsigned)shift;
-                if (amount >= 63u || (sum > INT64_MAX >> amount) ||
-                    (sum < INT64_MIN / (INT64_C(1) << amount)))
-                    return 0;
-                sum >>= amount;
+                if (!arithmetic_shift_right(sum, amount, &sum)) return 0;
             } else {
                 const unsigned amount = (unsigned)(-shift);
-                if (amount >= 63u || sum > (INT64_MAX >> amount) ||
-                    sum < (INT64_MIN >> amount))
+                if (amount >= 63u ||
+                    !multiply_i64(sum, INT64_C(1) << amount, &sum))
                     return 0;
-                sum <<= amount;
             }
-            samples[index] += sum;
+            if (!add_i64(samples[index], sum, &samples[index])) return 0;
         }
     } else {
         return 0;
     }
     for (index = 0u; index < block_samples; ++index) {
         if (wasted != 0u) {
-            if (samples[index] > (INT64_MAX >> wasted) ||
-                samples[index] < (INT64_MIN >> wasted))
+            if (wasted >= 63u ||
+                !multiply_i64(samples[index], INT64_C(1) << wasted,
+                              &samples[index]))
                 return 0;
-            samples[index] <<= wasted;
         }
         if (!value_in_range(samples[index], bits_per_sample)) return 0;
     }
@@ -468,14 +557,22 @@ int rin_media_flac_decode_frame(
         int64_t values[RIN_MEDIA_FLAC_MAX_CHANNELS] = {0};
         for (channel = 0u; channel < channels; ++channel)
             values[channel] = scratch[(size_t)channel * block_samples + sample];
-        if (channel_assignment == 8u) values[1] = values[0] - values[1];
-        else if (channel_assignment == 9u) values[0] = values[1] + values[0];
+        if (channel_assignment == 8u) {
+            if (!subtract_i64(values[0], values[1], &values[1]))
+                return RIN_MEDIA_FLAC_DECODE_MALFORMED;
+        } else if (channel_assignment == 9u) {
+            if (!add_i64(values[1], values[0], &values[0]))
+                return RIN_MEDIA_FLAC_DECODE_MALFORMED;
+        }
         else if (channel_assignment == 10u) {
             const int64_t side = values[1];
             const int64_t mid = values[0];
             const int64_t side_shifted = arithmetic_shift_right_one(side);
-            values[0] = mid + (side & 1) + side_shifted;
-            values[1] = mid - side_shifted;
+            const int64_t side_parity = side % 2 != 0 ? 1 : 0;
+            if (!add_i64(mid, side_parity, &values[0]) ||
+                !add_i64(values[0], side_shifted, &values[0]) ||
+                !subtract_i64(mid, side_shifted, &values[1]))
+                return RIN_MEDIA_FLAC_DECODE_MALFORMED;
         }
         for (channel = 0u; channel < channels; ++channel)
             if (!value_in_range(values[channel], request->bits_per_sample))

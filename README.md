@@ -83,8 +83,9 @@ caller supplies a bounded `int64_t` scratch arena and an `int32_t` interleaved
 output span; the decoder verifies the frame header and frame CRC, supports
 constant/verbatim/fixed/LPC subframes with Rice residuals and stereo channel
 decorrelation (including arithmetic right-shift semantics for negative odd
-side samples), and clears the output before publishing any failure. Frames,
-scratch, and output remain caller-owned.
+side samples), checks every fixed/LPC prediction, decorrelation, and wasted-bit
+intermediate for signed `int64_t` overflow, and clears the output before
+publishing any failure. Frames, scratch, and output remain caller-owned.
 
 The legacy `rinwav.h` S16 reader sign-extends 24-bit PCM before its bounded
 8-bit downshift and rejects non-finite IEEE float samples before conversion;
