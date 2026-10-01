@@ -48,6 +48,12 @@ its metadata before calculating duration. `rwav_read_s16()` rejects a sample
 request that cannot be represented by its `int` return value before touching
 the caller's output.
 
+The allocation-free container capability probe uses subtraction-based
+`size_t` bounds for ISO-BMFF extended-size headers, so a caller-provided size
+near the platform maximum cannot wrap the probe's header check. It still only
+recognizes the bounded envelope and does not grant packet, filesystem, or
+codec authority.
+
 ## Public API contract
 
 | Requirement | Contract |

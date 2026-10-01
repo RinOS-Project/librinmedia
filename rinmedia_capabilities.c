@@ -148,12 +148,12 @@ static int iso_bmff(const uint8_t* data, size_t source_bytes,
                     uint32_t* container_id)
 {
     size_t offset = 0u;
-    while (offset + 8u <= source_bytes) {
+    while (offset <= source_bytes && source_bytes - offset >= 8u) {
         uint64_t box_size = read_be32(data + offset);
         size_t header_size = 8u;
         size_t box_end;
         if (box_size == 1u) {
-            if (offset + 16u > source_bytes) return 0;
+            if (source_bytes - offset < 16u) return 0;
             box_size = ((uint64_t)read_be32(data + offset + 8u) << 32u) |
                        read_be32(data + offset + 12u);
             header_size = 16u;
