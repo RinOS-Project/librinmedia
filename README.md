@@ -2,6 +2,12 @@
 
 RinMedia provides media-container parsing, audio/video decoding interfaces, and playback/session support for RinOS.
 
+The public `AudioDecoderClient` and `MediaSessionClient` keep their local
+service authority and descriptor ownership private, while their POSIX socket
+waits use the public `RinRuntime::PollEventLoopBackend` userspace adapter.
+They do not expose the private RinOS wait-set backend or kernel readiness
+producer, and an unavailable media service is still reported as failure.
+
 `rinmedia_pcm.h` also exposes an allocation-free public PCM packet decoder.
 It converts bounded interleaved U8/S8/S16LE/S24LE/S32LE/F32LE packets into
 caller-owned S16 samples, rejects partial frames and non-finite float values,

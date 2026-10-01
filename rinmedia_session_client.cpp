@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 #include "rinmedia_session_client.hpp"
+#include "rinmedia_event_loop.hpp"
 
 #include "../libc/errno.h"
-#include "../libc/poll.h"
 #include "../libc/string.h"
 #include "../libc/sys/socket.h"
 #include "../libc/sys/un.h"
@@ -13,7 +13,6 @@
 namespace RinMedia {
 namespace {
 
-constexpr uint32_t kIoPollMs = 1000u;
 constexpr uint32_t kIoIdleLimit = 5u;
 constexpr uint32_t kAutostartRetryMs = 25u;
 constexpr uint32_t kAutostartBudgetMs = 500u;
@@ -25,16 +24,14 @@ bool transferExact(int fd, void* bytes, uint32_t size, bool receive) {
     uint32_t offset = 0u;
     uint32_t idle = 0u;
     while (offset < size) {
-        pollfd pfd = {};
-        pfd.fd = fd;
-        pfd.events = static_cast<short>(receive ? POLLIN : POLLOUT);
-        const int ready = poll(&pfd, 1u, static_cast<int>(kIoPollMs));
-        if (ready == 0) {
+        const auto wait_status = detail::waitForMediaFd(
+            fd, receive ? RinRuntime::EventLoop::WAIT_READABLE
+                         : RinRuntime::EventLoop::WAIT_WRITABLE);
+        if (wait_status == detail::MediaWaitStatus::Timeout) {
             if (++idle >= kIoIdleLimit) return false;
             continue;
         }
-        if (ready < 0 || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 ||
-            (pfd.revents & pfd.events) == 0) return false;
+        if (wait_status != detail::MediaWaitStatus::Ready) return false;
         const ssize_t count = receive
             ? recv(fd, cursor + offset, static_cast<size_t>(size - offset), 0)
             : send(fd, cursor + offset, static_cast<size_t>(size - offset), MSG_NOSIGNAL);

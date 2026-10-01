@@ -1,9 +1,8 @@
 /* SPDX-License-Identifier: MIT */
 
 #include "rinmedia_decode_service.hpp"
+#include "rinmedia_event_loop.hpp"
 
-#include "../libc/errno.h"
-#include "../libc/poll.h"
 #include "../libc/string.h"
 #include "../libc/sys/socket.h"
 #include "../libc/sys/un.h"
@@ -14,11 +13,9 @@
 namespace RinMedia {
 namespace {
 
-constexpr uint32_t kIoPollMs = 1000u;
 constexpr uint32_t kIoIdleLimit = 5u;
 constexpr uint32_t kAutostartRetryMs = 25u;
 constexpr uint32_t kAutostartBudgetMs = 500u;
-constexpr uint32_t kMaxPollEintr = 32u;
 
 extern "C" void rin_sleep(unsigned int milliseconds);
 
@@ -35,23 +32,16 @@ bool transferExact(int fd, void* bytes, uint32_t size, bool receive,
     uint8_t* cursor = static_cast<uint8_t*>(bytes);
     uint32_t offset = 0u;
     uint32_t idle = 0u;
-    uint32_t interrupted = 0u;
     while (offset < size) {
         if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
-        pollfd pfd = {};
-        pfd.fd = fd;
-        pfd.events = static_cast<short>(receive ? POLLIN : POLLOUT);
-        const int ready = poll(&pfd, 1u, static_cast<int>(kIoPollMs));
-        if (ready < 0 && errno == EINTR) {
-            if (++interrupted > kMaxPollEintr) return false;
-            continue;
-        }
-        if (ready == 0) {
+        const auto wait_status = detail::waitForMediaFd(
+            fd, receive ? RinRuntime::EventLoop::WAIT_READABLE
+                         : RinRuntime::EventLoop::WAIT_WRITABLE);
+        if (wait_status == detail::MediaWaitStatus::Timeout) {
             if (++idle >= kIoIdleLimit) return false;
             continue;
         }
-        if (ready < 0 || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 ||
-            (pfd.revents & pfd.events) == 0) return false;
+        if (wait_status != detail::MediaWaitStatus::Ready) return false;
         if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
         const ssize_t count = receive
             ? recv(fd, cursor + offset, static_cast<size_t>(size - offset), 0)
@@ -141,16 +131,8 @@ bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
     cmsg->cmsg_type = SCM_RIGHTS;
     memcpy(CMSG_DATA(cmsg), &descriptor, sizeof(descriptor));
     if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
-    pollfd ready = {};
-    ready.fd = fd;
-    ready.events = POLLOUT;
-    uint32_t interrupted = 0u;
-    int pollResult;
-    do {
-        pollResult = poll(&ready, 1u, static_cast<int>(kIoPollMs));
-    } while (pollResult < 0 && errno == EINTR && ++interrupted <= kMaxPollEintr);
-    if (pollResult <= 0 || (ready.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0 ||
-        (ready.revents & POLLOUT) == 0 ||
+    if (detail::waitForMediaFd(fd, RinRuntime::EventLoop::WAIT_WRITABLE) !=
+            detail::MediaWaitStatus::Ready ||
         pollCancelled(cancellation, cancellationContext, cancelled))
         return false;
     return sendmsg(fd, &message, MSG_NOSIGNAL) ==
