@@ -33,6 +33,12 @@ infinity into an out-of-range integer or wrap the frame counter. This prevents
 long-running pure playback state from wrapping backward; decoder, filesystem,
 device, and hardware ownership remain outside the model.
 
+The legacy public PCM time query saturates its time-to-sample conversion,
+rejects audio chunk-size and sample-count overflow, and reads 16-bit PCM as
+little-endian bytes instead of relying on caller-buffer alignment. Its output
+remains caller-owned and the query does not acquire filesystem, device, or
+codec authority.
+
 ## Public API contract
 
 | Requirement | Contract |

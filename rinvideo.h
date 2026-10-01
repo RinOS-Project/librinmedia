@@ -235,6 +235,17 @@ static inline uint32_t rvid_frame_for_time(uint32_t time_ms, float fps)
     return (uint32_t)value;
 }
 
+static inline uint32_t rvid_audio_sample_for_time(uint32_t time_ms,
+                                                   int sample_rate)
+{
+    uint64_t value;
+
+    if (sample_rate <= 0) return 0u;
+    value = (uint64_t)time_ms * (uint64_t)(unsigned)sample_rate / 1000u;
+    if (value >= (uint64_t)UINT32_MAX) return UINT32_MAX;
+    return (uint32_t)value;
+}
+
 /* ═══════════════════════════════════════════════════════════════
  * 公開API
  * ═══════════════════════════════════════════════════════════════*/
@@ -458,8 +469,8 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
         return RVID_DATA_ERROR;
 
     /* 時間からサンプル位置を計算 */
-    uint32_t target_sample = (uint32_t)((uint64_t)time_ms *
-                             player->audio_info.sample_rate / 1000);
+    uint32_t target_sample = rvid_audio_sample_for_time(
+        time_ms, player->audio_info.sample_rate);
 
     /* 該当するオーディオチャンクを探す */
     uint32_t chunk = 0;
@@ -475,24 +486,34 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
         int ret = rvid_get_audio_chunk(player, chunk, &chunk_data, &chunk_size);
         if (ret != RVID_OK) break;
 
-        uint32_t chunk_samples = chunk_size / bytes_per_sample;
+        size_t chunk_sample_count = chunk_size / (size_t)bytes_per_sample;
+        if (chunk_sample_count > (size_t)UINT32_MAX)
+            return RVID_DATA_ERROR;
+        uint32_t chunk_samples = (uint32_t)chunk_sample_count;
 
-        if (accumulated_samples + chunk_samples > target_sample) {
+        if (accumulated_samples <= target_sample &&
+            chunk_samples > target_sample - accumulated_samples) {
             /* このチャンクに該当サンプルがある */
             uint32_t offset_samples = target_sample - accumulated_samples;
             uint32_t available = chunk_samples - offset_samples;
             uint32_t requested = (uint32_t)max_samples;
             uint32_t to_copy = (available < requested) ? available : requested;
 
-            const uint8_t* src = chunk_data + offset_samples * bytes_per_sample;
+            size_t offset_bytes = (size_t)offset_samples *
+                                  (size_t)bytes_per_sample;
+            if (offset_bytes > chunk_size) return RVID_DATA_ERROR;
+            const uint8_t* src = chunk_data + offset_bytes;
+            size_t output_count = (size_t)to_copy *
+                                  (size_t)player->audio_info.channels;
 
             /* PCMデータを16bitに変換してコピー */
             if (player->audio_info.bits_per_sample == 16) {
-                for (uint32_t i = 0; i < to_copy * player->audio_info.channels; i++) {
-                    output[i] = ((int16_t*)src)[i];
+                for (size_t i = 0; i < output_count; i++) {
+                    output[i] = (int16_t)((uint16_t)src[i * 2u] |
+                                          ((uint16_t)src[i * 2u + 1u] << 8u));
                 }
             } else if (player->audio_info.bits_per_sample == 8) {
-                for (uint32_t i = 0; i < to_copy * player->audio_info.channels; i++) {
+                for (size_t i = 0; i < output_count; i++) {
                     output[i] = ((int16_t)src[i] - 128) << 8;
                 }
             }
@@ -501,7 +522,10 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
             return RVID_OK;
         }
 
+        if (chunk_samples > UINT32_MAX - accumulated_samples)
+            return RVID_DATA_ERROR;
         accumulated_samples += chunk_samples;
+        if (chunk == UINT32_MAX) return RVID_DATA_ERROR;
         chunk++;
     }
 
