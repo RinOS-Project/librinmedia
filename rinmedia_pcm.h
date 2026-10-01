@@ -2,8 +2,13 @@
 #ifndef RIN_MEDIA_PCM_H
 #define RIN_MEDIA_PCM_H
 
+#if defined(RIN_FREESTANDING)
 #include "../libc/stddef.h"
 #include "../libc/stdint.h"
+#else
+#include <stddef.h>
+#include <stdint.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {

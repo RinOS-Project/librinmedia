@@ -7,8 +7,13 @@
 #ifndef RINVIDEO_H
 #define RINVIDEO_H
 
+#if defined(RIN_FREESTANDING)
 #include "../libc/stdint.h"
 #include "../libc/stddef.h"
+#else
+#include <stdint.h>
+#include <stddef.h>
+#endif
 #include "rinavi.h"
 #include "rinwav.h"
 #include "../rinjpeg/rinjpeg.h"

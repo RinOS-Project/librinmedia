@@ -7,8 +7,13 @@
 #ifndef RINAVI_H
 #define RINAVI_H
 
+#if defined(RIN_FREESTANDING)
 #include "../libc/stdint.h"
 #include "../libc/stddef.h"
+#else
+#include <stdint.h>
+#include <stddef.h>
+#endif
 
 /* ═══════════════════════════════════════════════════════════════
  * 定数
