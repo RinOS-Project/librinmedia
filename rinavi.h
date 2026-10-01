@@ -211,7 +211,8 @@ typedef struct {
 
 static inline int ravi_range_valid(const RAviContext* ctx, size_t offset,
                                    size_t length) {
-    return ctx != 0 && offset <= ctx->size && length <= ctx->size - offset;
+    return ctx != 0 && ctx->data != 0 && offset <= ctx->size &&
+           length <= ctx->size - offset;
 }
 
 static inline uint16_t ravi_load16(const uint8_t* data) {
@@ -299,6 +300,28 @@ static inline int ravi_get_stream_index(uint32_t fourcc) {
         return (c0 - '0') * 10 + (c1 - '0');
     }
     return -1;
+}
+
+static inline uint32_t ravi_frame_time_ms(uint32_t frame, float fps)
+{
+    double value;
+
+    if (!(fps > 0.0f)) return 0u;
+    value = (double)frame * 1000.0 / (double)fps;
+    if (!(value > 0.0)) return 0u;
+    if (value >= (double)UINT32_MAX) return UINT32_MAX;
+    return (uint32_t)value;
+}
+
+static inline uint32_t ravi_frame_for_time(uint32_t time_ms, float fps)
+{
+    double value;
+
+    if (!(fps > 0.0f)) return 0u;
+    value = (double)time_ms * (double)fps / 1000.0;
+    if (!(value > 0.0)) return 0u;
+    if (value >= (double)UINT32_MAX) return UINT32_MAX;
+    return (uint32_t)value;
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -409,8 +432,13 @@ static inline int ravi_parse_header_list(RAviContext* ctx, size_t end_pos) {
                 ctx->total_frames = total_frames;
                 if (microseconds > 0u) {
                     ctx->fps = 1000000.0f / (float)microseconds;
-                    ctx->duration_ms = (uint32_t)((uint64_t)total_frames *
-                                       microseconds / 1000u);
+                    {
+                        uint64_t duration_ms = (uint64_t)total_frames *
+                                               microseconds / 1000u;
+                        ctx->duration_ms = duration_ms >= UINT32_MAX ?
+                                           UINT32_MAX :
+                                           (uint32_t)duration_ms;
+                    }
                 }
             }
         } else if (fourcc == RAVI_LIST) {
@@ -530,7 +558,8 @@ static inline int ravi_get_info(RAviContext* ctx, int* width, int* height,
  */
 static inline int ravi_get_audio_info(RAviContext* ctx, int* channels,
                                        int* sample_rate, int* bits_per_sample) {
-    if (!ctx || ctx->audio_stream < 0) return RAVI_ERROR;
+    if (!ctx || ctx->audio_stream < 0 ||
+        ctx->audio_stream >= RAVI_MAX_STREAMS) return RAVI_ERROR;
     RAviStream* as = &ctx->streams[ctx->audio_stream];
     if (channels) *channels = as->audio.channels;
     if (sample_rate) *sample_rate = as->audio.sample_rate;
@@ -542,7 +571,8 @@ static inline int ravi_get_audio_info(RAviContext* ctx, int* channels,
  * ビデオコーデック取得
  */
 static inline uint32_t ravi_get_video_codec(RAviContext* ctx) {
-    if (!ctx || ctx->video_stream < 0) return 0;
+    if (!ctx || ctx->video_stream < 0 ||
+        ctx->video_stream >= RAVI_MAX_STREAMS) return 0;
     return ctx->streams[ctx->video_stream].video.codec;
 }
 
@@ -554,7 +584,8 @@ static inline void ravi_clear_frame(RAviFrame* frame) {
 
 static inline int ravi_index_range(const RAviContext* ctx,
                                    const uint8_t** entry_out) {
-    if (ctx == 0 || entry_out == 0 || ctx->idx1_offset > ctx->size ||
+    if (ctx == 0 || entry_out == 0 || ctx->data == 0 ||
+        ctx->idx1_offset > ctx->size ||
         ctx->idx1_count >
             (ctx->size - ctx->idx1_offset) / sizeof(RAviIndexEntry)) return 0;
     *entry_out = ctx->data + ctx->idx1_offset;
@@ -605,6 +636,7 @@ static inline int ravi_get_frame_by_index(RAviContext* ctx, uint32_t frame_num,
                 frame->frame_number = frame_num;
                 return RAVI_OK;
             }
+            if (video_frame == UINT32_MAX) return RAVI_DATA_ERROR;
             video_frame++;
         }
     }
@@ -616,9 +648,14 @@ static inline int ravi_get_frame_by_index(RAviContext* ctx, uint32_t frame_num,
  * 次のビデオフレームを取得（シーケンシャル読み取り）
  */
 static inline int ravi_read_next_video_frame(RAviContext* ctx, RAviFrame* frame) {
+    if (!ctx) {
+        ravi_clear_frame(frame);
+        return RAVI_ERROR;
+    }
     int ret = ravi_get_frame_by_index(ctx, ctx->current_frame, frame);
     if (ret == RAVI_OK) {
-        ctx->current_frame++;
+        if (ctx->current_frame != UINT32_MAX)
+            ctx->current_frame++;
     }
     return ret;
 }
@@ -651,6 +688,7 @@ static inline int ravi_get_audio_chunk(RAviContext* ctx, uint32_t chunk_num,
                 frame->frame_number = chunk_num;
                 return RAVI_OK;
             }
+            if (audio_chunk == UINT32_MAX) return RAVI_DATA_ERROR;
             audio_chunk++;
         }
     }
@@ -675,7 +713,7 @@ static inline int ravi_seek(RAviContext* ctx, uint32_t frame_num) {
  */
 static inline int ravi_seek_ms(RAviContext* ctx, uint32_t time_ms) {
     if (!ctx || ctx->fps <= 0) return RAVI_ERROR;
-    uint32_t frame = (uint32_t)(time_ms * ctx->fps / 1000.0f);
+    uint32_t frame = ravi_frame_for_time(time_ms, ctx->fps);
     return ravi_seek(ctx, frame);
 }
 
@@ -691,7 +729,7 @@ static inline uint32_t ravi_get_current_frame(RAviContext* ctx) {
  */
 static inline uint32_t ravi_get_current_time_ms(RAviContext* ctx) {
     if (!ctx || ctx->fps <= 0) return 0;
-    return (uint32_t)(ctx->current_frame * 1000.0f / ctx->fps);
+    return ravi_frame_time_ms(ctx->current_frame, ctx->fps);
 }
 
 #endif /* RINAVI_H */
