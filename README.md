@@ -40,6 +40,9 @@ remains caller-owned and the query does not acquire filesystem, device, or
 codec authority; malformed or unavailable AVI audio chunks remain errors
 instead of being reported as end-of-file.
 
+`rvid_update()` also saturates its `int` decode-count result at `INT32_MAX`
+instead of narrowing large `uint32_t` frame deltas before subtraction.
+
 ## Public API contract
 
 | Requirement | Contract |

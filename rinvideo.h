@@ -658,8 +658,10 @@ static inline int rvid_update(RVidPlayer* player, uint32_t elapsed_ms) {
         }
     }
 
-    int frames_to_decode = (int)target_frame - (int)player->current_frame;
-    if (frames_to_decode < 0) frames_to_decode = 0;
+    uint32_t frame_delta = target_frame > player->current_frame ?
+                           target_frame - player->current_frame : 0u;
+    int frames_to_decode = frame_delta > (uint32_t)INT32_MAX ?
+                           INT32_MAX : (int)frame_delta;
 
     return frames_to_decode;
 }
