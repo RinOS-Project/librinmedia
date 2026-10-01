@@ -2581,6 +2581,11 @@ int rin_media_container_read_packet(
             memset(output, 0, (size_t)packet->byte_size);
             return RIN_MEDIA_DEMUX_SOURCE_STALLED;
         }
+        /* The source owns only the reported prefix of this request.  Clear
+         * the rest even if a buggy source wrote into the remainder, so a
+         * caller-reused packet buffer cannot expose unreported bytes. */
+        if (received < request)
+            memset(output + offset + received, 0, request - received);
         offset += received;
     }
     *bytes_read = offset;

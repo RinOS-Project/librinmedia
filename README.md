@@ -17,8 +17,10 @@ does not grant filesystem, File Portal, codec, or service authority.
 `rin_media_container_read_packet()` provides the same contract for a caller's
 opaque source callback. Each callback request is capped at 64 KiB, short reads
 are retried, and callback failure, stall, or an oversized report clears the
-packet output. The callback is not retained and is not a filesystem or service
-owner.
+packet output. After a successful short read it also clears the unreported
+tail of that request, so a buggy source cannot leave bytes visible in a
+caller-reused buffer. The callback is not retained and is not a filesystem or
+service owner.
 
 ## Public API contract
 
