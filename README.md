@@ -43,6 +43,11 @@ instead of being reported as end-of-file.
 `rvid_update()` also saturates its `int` decode-count result at `INT32_MAX`
 instead of narrowing large `uint32_t` frame deltas before subtraction.
 
+The public legacy WAV duration query saturates at `UINT32_MAX` and validates
+its metadata before calculating duration. `rwav_read_s16()` rejects a sample
+request that cannot be represented by its `int` return value before touching
+the caller's output.
+
 ## Public API contract
 
 | Requirement | Contract |

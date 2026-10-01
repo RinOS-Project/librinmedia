@@ -457,9 +457,13 @@ static inline int rwav_get_info(RWavContext* ctx, int* channels, int* sample_rat
  */
 static inline uint32_t rwav_get_duration_ms(RWavContext* ctx) {
     if (!ctx || ctx->sample_rate == 0) return 0;
-    uint32_t total_samples;
-    rwav_get_info(ctx, NULL, NULL, NULL, &total_samples);
-    return (uint32_t)((uint64_t)total_samples * 1000 / ctx->sample_rate);
+    uint32_t total_samples = 0u;
+    uint64_t duration_ms;
+    if (rwav_get_info(ctx, NULL, NULL, NULL, &total_samples) != RWAV_OK)
+        return 0u;
+    duration_ms = (uint64_t)total_samples * 1000u / ctx->sample_rate;
+    return duration_ms >= (uint64_t)UINT32_MAX ? UINT32_MAX :
+           (uint32_t)duration_ms;
 }
 
 /*
@@ -468,6 +472,7 @@ static inline uint32_t rwav_get_duration_ms(RWavContext* ctx) {
 static inline int rwav_read_s16(RWavContext* ctx, int16_t* output, size_t num_samples) {
     if (!ctx || !output) return RWAV_ERROR;
     if (num_samples == 0u) return RWAV_END_OF_FILE;
+    if (num_samples > (size_t)INT32_MAX) return RWAV_ERROR;
     if (ctx->data == NULL || ctx->data_offset > ctx->size ||
         ctx->data_size > ctx->size - ctx->data_offset ||
         ctx->read_pos > ctx->data_size || ctx->channels == 0u ||
