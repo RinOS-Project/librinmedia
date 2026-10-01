@@ -20,7 +20,10 @@ are retried, and callback failure, stall, or an oversized report clears the
 packet output. After a successful short read it also clears the unreported
 tail of that request, so a buggy source cannot leave bytes visible in a
 caller-reused buffer. The callback is not retained and is not a filesystem or
-service owner.
+caller-reused buffer. The cancellation-enabled form samples an optional
+caller-owned cancellation callback before and after each source read and
+clears the whole packet on cancellation or owner failure. The callback is not
+retained and is not a filesystem or service owner.
 
 ## Public API contract
 

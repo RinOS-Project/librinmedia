@@ -21,7 +21,8 @@ enum {
     RIN_MEDIA_DEMUX_UNSUPPORTED = -2,
     RIN_MEDIA_DEMUX_OUTPUT_TOO_SMALL = -3,
     RIN_MEDIA_DEMUX_SOURCE_FAILED = -4,
-    RIN_MEDIA_DEMUX_SOURCE_STALLED = -5
+    RIN_MEDIA_DEMUX_SOURCE_STALLED = -5,
+    RIN_MEDIA_DEMUX_CANCELLED = -6
 };
 
 enum {
@@ -86,6 +87,11 @@ typedef int (*RinMediaDemuxPacketReadV1)(
     void* context, uint64_t byte_offset, uint8_t* output, size_t capacity,
     size_t* bytes_read);
 
+/* An optional cancellation owner returns zero to continue, one to cancel,
+ * and any other non-zero value for an owner failure.  The demuxer never
+ * retains this callback or its context. */
+typedef int (*RinMediaDemuxPacketCancelledV1)(void* context);
+
 /* Inspect bounded container metadata only.  Packet bytes, filesystem paths,
  * codec state, and backend-specific ownership are not part of this API. */
 int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
@@ -130,6 +136,15 @@ int rin_media_container_copy_packet(
 int rin_media_container_read_packet(
     const RinMediaDemuxPacketV1* packet, size_t packet_size,
     RinMediaDemuxPacketReadV1 read_source, void* context,
+    uint8_t* output, size_t output_capacity, size_t* bytes_read);
+
+/* Cancellation-enabled form of the same public source adapter.  The
+ * caller-owned cancellation callback is sampled before and after each source
+ * read; cancellation and owner failure clear the whole packet output. */
+int rin_media_container_read_packet_with_cancellation(
+    const RinMediaDemuxPacketV1* packet, size_t packet_size,
+    RinMediaDemuxPacketReadV1 read_source, void* context,
+    RinMediaDemuxPacketCancelledV1 cancelled, void* cancellation_context,
     uint8_t* output, size_t output_capacity, size_t* bytes_read);
 
 #ifdef __cplusplus

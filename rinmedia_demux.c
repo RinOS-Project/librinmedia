@@ -2531,13 +2531,15 @@ int rin_media_container_copy_packet(
     return RIN_MEDIA_DEMUX_OK;
 }
 
-int rin_media_container_read_packet(
+int rin_media_container_read_packet_with_cancellation(
     const RinMediaDemuxPacketV1* packet, size_t packet_size,
     RinMediaDemuxPacketReadV1 read_source, void* context,
+    RinMediaDemuxPacketCancelledV1 cancelled, void* cancellation_context,
     uint8_t* output, size_t output_capacity, size_t* bytes_read)
 {
     size_t offset = 0u;
     size_t clear_bytes;
+    int cancellation_status;
     if (!bytes_read) {
         clear_bytes = output_capacity < RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ?
             output_capacity : RIN_MEDIA_DEMUX_MAX_PACKET_BYTES;
@@ -2566,6 +2568,17 @@ int rin_media_container_read_packet(
         int result;
         if (request > RIN_MEDIA_DEMUX_PACKET_READ_CHUNK_BYTES)
             request = RIN_MEDIA_DEMUX_PACKET_READ_CHUNK_BYTES;
+        if (cancelled != NULL) {
+            cancellation_status = cancelled(cancellation_context);
+            if (cancellation_status == 1) {
+                memset(output, 0, (size_t)packet->byte_size);
+                return RIN_MEDIA_DEMUX_CANCELLED;
+            }
+            if (cancellation_status != 0) {
+                memset(output, 0, (size_t)packet->byte_size);
+                return RIN_MEDIA_DEMUX_SOURCE_FAILED;
+            }
+        }
         result = read_source(
             context, packet->byte_offset + (uint64_t)offset,
             output + offset, request, &received);
@@ -2586,8 +2599,29 @@ int rin_media_container_read_packet(
          * caller-reused packet buffer cannot expose unreported bytes. */
         if (received < request)
             memset(output + offset + received, 0, request - received);
+        if (cancelled != NULL) {
+            cancellation_status = cancelled(cancellation_context);
+            if (cancellation_status == 1) {
+                memset(output, 0, (size_t)packet->byte_size);
+                return RIN_MEDIA_DEMUX_CANCELLED;
+            }
+            if (cancellation_status != 0) {
+                memset(output, 0, (size_t)packet->byte_size);
+                return RIN_MEDIA_DEMUX_SOURCE_FAILED;
+            }
+        }
         offset += received;
     }
     *bytes_read = offset;
     return RIN_MEDIA_DEMUX_OK;
+}
+
+int rin_media_container_read_packet(
+    const RinMediaDemuxPacketV1* packet, size_t packet_size,
+    RinMediaDemuxPacketReadV1 read_source, void* context,
+    uint8_t* output, size_t output_capacity, size_t* bytes_read)
+{
+    return rin_media_container_read_packet_with_cancellation(
+        packet, packet_size, read_source, context, NULL, NULL, output,
+        output_capacity, bytes_read);
 }
