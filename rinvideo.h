@@ -577,13 +577,22 @@ static inline int rvid_is_finished(RVidPlayer* player) {
  * 戻り値: デコードすべきフレーム数
  */
 static inline int rvid_update(RVidPlayer* player, uint32_t elapsed_ms) {
-    if (!player || player->state != RVID_STATE_PLAYING) return 0;
+    if (!player || player->state != RVID_STATE_PLAYING ||
+        player->video_info.total_frames == 0u ||
+        !(player->video_info.fps > 0.0f)) return 0;
 
-    player->current_time_ms += elapsed_ms;
+    if (elapsed_ms > UINT32_MAX - player->current_time_ms)
+        player->current_time_ms = UINT32_MAX;
+    else
+        player->current_time_ms += elapsed_ms;
 
     /* 目標フレームを計算 */
-    uint32_t target_frame = (uint32_t)(player->current_time_ms *
-                            player->video_info.fps / 1000.0f);
+    const float target_frame_value = (float)player->current_time_ms *
+                                     player->video_info.fps / 1000.0f;
+    uint32_t target_frame = target_frame_value >=
+                                    (float)player->video_info.total_frames ?
+                                player->video_info.total_frames :
+                                (uint32_t)target_frame_value;
 
     if (target_frame >= player->video_info.total_frames) {
         if (player->loop) {
