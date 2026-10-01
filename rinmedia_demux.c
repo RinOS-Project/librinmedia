@@ -2499,3 +2499,34 @@ int rin_media_container_index_packets(
     sort_packets(output);
     return RIN_MEDIA_DEMUX_OK;
 }
+
+int rin_media_container_copy_packet(
+    const uint8_t* data, size_t source_bytes,
+    const RinMediaDemuxPacketV1* packet, size_t packet_size,
+    uint8_t* output, size_t output_capacity, size_t* bytes_copied)
+{
+    size_t clear_bytes;
+    if (bytes_copied) *bytes_copied = 0u;
+    if (!data || source_bytes == 0u ||
+        source_bytes > RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES || !packet ||
+        packet_size < sizeof(*packet) || packet->byte_size == 0u ||
+        packet->byte_size > RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ||
+        packet->byte_offset > (uint64_t)source_bytes ||
+        packet->byte_size > source_bytes - (size_t)packet->byte_offset) {
+        clear_bytes = output_capacity < RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ?
+            output_capacity : RIN_MEDIA_DEMUX_MAX_PACKET_BYTES;
+        if (output && clear_bytes != 0u) memset(output, 0, clear_bytes);
+        return RIN_MEDIA_DEMUX_INVALID;
+    }
+    if (!output || output_capacity < (size_t)packet->byte_size ||
+        !bytes_copied) {
+        clear_bytes = output_capacity < RIN_MEDIA_DEMUX_MAX_PACKET_BYTES ?
+            output_capacity : RIN_MEDIA_DEMUX_MAX_PACKET_BYTES;
+        if (output && clear_bytes != 0u) memset(output, 0, clear_bytes);
+        return RIN_MEDIA_DEMUX_OUTPUT_TOO_SMALL;
+    }
+    memmove(output, data + (size_t)packet->byte_offset,
+            (size_t)packet->byte_size);
+    *bytes_copied = (size_t)packet->byte_size;
+    return RIN_MEDIA_DEMUX_OK;
+}

@@ -8,6 +8,12 @@ caller-owned S16 samples, rejects partial frames and non-finite float values,
 and clears the output on every failure. This packet helper is independent of
 filesystem, service, device, and hardware ownership.
 
+The public demux packet table remains a caller-owned source view. When a
+consumer needs owned packet bytes, `rin_media_container_copy_packet()` copies
+one validated extent into a caller-owned buffer with a 1 MiB bound and a
+failure-atomic output/size contract. It does not open paths or descriptors and
+does not grant filesystem, File Portal, codec, or service authority.
+
 ## Public API contract
 
 | Requirement | Contract |
@@ -17,7 +23,7 @@ filesystem, service, device, and hardware ownership.
 | Unsupported API | The legacy AVI/WAV APIs are not general media compatibility promises. Supported codecs and containers depend on the documented implementation and linked FFmpeg/build profile. This library does not grant access to arbitrary paths or descriptors. |
 | ownership | Legacy parser contexts borrow their source bytes. `RinMedia::AudioDecoder::openDescriptor` takes ownership of its File Portal descriptor; packet/frame buffers and callbacks otherwise follow the declared caller-owned lifetime. Close or destroy objects through their owning API. |
 | thread-safety | Decoder, playback, and session instances hold mutable state and must not be used concurrently unless a declaration explicitly says otherwise. Synchronize shared callbacks, descriptors, and output buffers. |
-| limits | Container inspection and packet indexing are capped at 4 MiB, 32 tracks, and 256 packet extents; ISO-BMFF/EBML nesting and all variable-length fields are bounded by the caller-owned input. Individual packet extents and decoded FLAC frames are capped at 1 MiB; FLAC blocks are capped at 65,536 samples and 8 channels. AVI parsing is capped at 16 streams. The public PCM packet decoder caps input at 1 MiB, frames at 65,536, sample rate at 384 kHz, and channels at 32. The shared framework caps packets at 1 MiB, tracks at 32, and channels at 32; audio output rate is capped at 384 kHz and channels at 32. Other bounds depend on the selected backend and build. |
+| limits | Container inspection and packet indexing are capped at 4 MiB, 32 tracks, and 256 packet extents; ISO-BMFF/EBML nesting and all variable-length fields are bounded by the caller-owned input. Individual packet extents, `rin_media_container_copy_packet()` output, and decoded FLAC frames are capped at 1 MiB; FLAC blocks are capped at 65,536 samples and 8 channels. AVI parsing is capped at 16 streams. The public PCM packet decoder caps input at 1 MiB, frames at 65,536, sample rate at 384 kHz, and channels at 32. The shared framework caps packets at 1 MiB, tracks at 32, and channels at 32; audio output rate is capped at 384 kHz and channels at 32. Other bounds depend on the selected backend and build. |
 | errors | Legacy APIs return status constants such as OK, data error, unsupported, and end-of-file. C++ methods return booleans or frame counts and expose last-error/cancellation state where declared. Callers must check results and stop use after failure. |
 | ABI stability | C headers provide source-level C interfaces with packed structures; C++ classes follow compiler and standard-library ABI. No general cross-version binary ABI promise is published. |
 | security | Treat media as untrusted. Use authenticated File Portal descriptors for the modern pipeline, enforce service authorization at the boundary, bound decode output, and do not pass arbitrary paths or shared-memory names as authority. |

@@ -11,6 +11,7 @@ extern "C" {
 #define RIN_MEDIA_DEMUX_ABI_V1 1u
 #define RIN_MEDIA_DEMUX_MAX_TRACKS 32u
 #define RIN_MEDIA_DEMUX_MAX_PACKETS 256u
+#define RIN_MEDIA_DEMUX_MAX_PACKET_BYTES (1024u * 1024u)
 #define RIN_MEDIA_DEMUX_CODEC_NAME_MAX 32u
 
 enum {
@@ -55,8 +56,8 @@ typedef struct RinMediaDemuxInfoV1 {
 } RinMediaDemuxInfoV1;
 
 /* A packet is a bounded view into the caller-owned source.  The demuxer never
- * allocates, copies, or owns packet bytes; byte_offset/byte_size must be
- * resolved against the same source span supplied to the indexing call. */
+ * allocates or owns packet bytes; byte_offset/byte_size must be resolved
+ * against the same source span supplied to the indexing call. */
 typedef struct RinMediaDemuxPacketV1 {
     uint64_t byte_offset;
     uint32_t byte_size;
@@ -94,14 +95,23 @@ int rin_media_container_inspect(const uint8_t* data, size_t source_bytes,
  * metadata, a single-page bounded Opus packet extent subset with C=0/1/2/3
  * frames (including bounded C=3 padding) of known 2.5--60 ms duration, and a
  * one-audio-packet-per-page Vorbis extent subset; ADTS exposes
- * bounded AAC frame metadata and extents.  Subframe decoding, packet copying,
- * filesystem access, and backend ownership remain outside this public
- * contract.  Code-2 Opus first-frame lengths use the RFC 6716 one/two-byte
+ * bounded AAC frame metadata and extents.  Subframe decoding, filesystem
+ * access, and backend ownership remain outside this public contract.  Code-2
+ * Opus first-frame lengths use the RFC 6716 one/two-byte
  * form and each frame is bounded to 1275 bytes. */
 int rin_media_container_index_packets(
     const uint8_t* data, size_t source_bytes,
     const RinMediaDemuxInfoV1* info, size_t info_size,
     RinMediaDemuxPacketTableV1* output, size_t output_size);
+
+/* Copy one indexed packet into a caller-owned buffer.  This is a memory
+ * consumer only: it validates the extent against the same bounded source
+ * span used for indexing and never opens paths, descriptors, or services.
+ * Output and bytes_copied are failure-atomic. */
+int rin_media_container_copy_packet(
+    const uint8_t* data, size_t source_bytes,
+    const RinMediaDemuxPacketV1* packet, size_t packet_size,
+    uint8_t* output, size_t output_capacity, size_t* bytes_copied);
 
 #ifdef __cplusplus
 }
