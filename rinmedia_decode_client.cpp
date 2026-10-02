@@ -281,14 +281,29 @@ bool AudioDecoderClient::openDescriptor(int descriptor,
         error_ = "メディアデコードがキャンセルされました";
         return false;
     }
+    AudioMetadata candidateMetadata;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    try {
+#endif
+        candidateMetadata.durationMs = metadata.duration_ms;
+        candidateMetadata.title.assign(metadata.title, metadata.title_bytes);
+        candidateMetadata.artist.assign(metadata.artist, metadata.artist_bytes);
+        candidateMetadata.album.assign(metadata.album, metadata.album_bytes);
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+    } catch (...) {
+        (void)::close(fd);
+        error_ = "メディアデコードのmetadataを確保できません";
+        return false;
+    }
+#endif
     socket_fd_ = fd;
     session_id_ = reply.session_id;
     next_request_id_ = 2u;
     output_format_ = output;
-    metadata_.durationMs = metadata.duration_ms;
-    metadata_.title.assign(metadata.title, metadata.title_bytes);
-    metadata_.artist.assign(metadata.artist, metadata.artist_bytes);
-    metadata_.album.assign(metadata.album, metadata.album_bytes);
+    metadata_.durationMs = candidateMetadata.durationMs;
+    metadata_.title.swap(candidateMetadata.title);
+    metadata_.artist.swap(candidateMetadata.artist);
+    metadata_.album.swap(candidateMetadata.album);
     return true;
 }
 
