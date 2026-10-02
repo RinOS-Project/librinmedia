@@ -61,6 +61,9 @@ public:
     void setCancellation(RinRuntimeCancellationFunction cancellation,
                          void* cancellation_context);
     bool setOutputFormat(const AudioOutputFormat& output);
+    /* On -1, the caller-owned PCM span for maximumFrames is zeroed.  A
+     * positive return value is a completed prefix and may be shorter than
+     * maximumFrames at end-of-stream. */
     int readFrames(Sample* destination, int maximumFrames);
     bool seek(Milliseconds positionMs);
     void close();

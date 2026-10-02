@@ -42,6 +42,17 @@ constexpr int kMaxChannels = 32;
 constexpr int kMaxSampleRate = 384000;
 constexpr int kMaxAlbumArtBytes = 4 * 1024 * 1024;
 
+void clearAudioOutput(Sample* destination, int maximumFrames,
+                      uint32_t channels) {
+    if (!destination || maximumFrames <= 0 ||
+        maximumFrames > kMaxFrameSamples || channels == 0u ||
+        channels > kAudioOutputMaxChannels)
+        return;
+    const size_t sampleCount = static_cast<size_t>(maximumFrames) * channels;
+    if (sampleCount > SIZE_MAX / sizeof(Sample)) return;
+    memset(destination, 0, sampleCount * sizeof(Sample));
+}
+
 }
 
 struct AudioDecoder::Impl {
@@ -483,6 +494,11 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
 }
 
 int AudioDecoder::readFrames(Sample* destination, int maximumFrames) {
+    const uint32_t outputChannels =
+        implementation && audioOutputFormatValid(implementation->output)
+            ? implementation->output.channels
+            : kAudioOutputDefaultChannels;
+    clearAudioOutput(destination, maximumFrames, outputChannels);
     if (!implementation || !implementation->codec || !destination ||
         maximumFrames <= 0 || maximumFrames > kMaxFrameSamples) return -1;
     Impl& state = *implementation;
@@ -490,6 +506,7 @@ int AudioDecoder::readFrames(Sample* destination, int maximumFrames) {
     while (produced < maximumFrames) {
         if (state.pollCancellation()) {
             state.clearPending();
+            clearAudioOutput(destination, maximumFrames, state.output.channels);
             return -1;
         }
         if (state.pendingOffset < state.pendingSamples) {
@@ -506,7 +523,10 @@ int AudioDecoder::readFrames(Sample* destination, int maximumFrames) {
             continue;
         }
         int result = state.decodeNextFrame();
-        if (state.cancelled) return -1;
+        if (state.cancelled) {
+            clearAudioOutput(destination, maximumFrames, state.output.channels);
+            return -1;
+        }
         if (result < 0) return produced ? produced : -1;
         if (result == 0) break;
     }
