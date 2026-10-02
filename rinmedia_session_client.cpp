@@ -113,9 +113,73 @@ bool callOnSocket(int fd, uint32_t* next_request_id, uint16_t operation,
     return true;
 }
 
-bool validPublisherInfo(const RinMediaSessionInfoV1& info) {
+bool mediaSessionUtf8Valid(const char* text, uint32_t bytes) {
+    const uint8_t* value = reinterpret_cast<const uint8_t*>(text);
+    uint32_t index = 0u;
+    if (!text) return false;
+    while (index < bytes) {
+        const uint8_t first = value[index++];
+        uint32_t codepoint;
+        uint32_t continuationCount;
+        if (first >= 0x20u && first <= 0x7eu) continue;
+        if (first < 0xc2u || first > 0xf4u) return false;
+        continuationCount = first < 0xe0u ? 1u : first < 0xf0u ? 2u : 3u;
+        if (index + continuationCount > bytes) return false;
+        if ((value[index] & 0xc0u) != 0x80u ||
+            (continuationCount >= 2u &&
+             (value[index + 1u] & 0xc0u) != 0x80u) ||
+            (continuationCount == 3u &&
+             (value[index + 2u] & 0xc0u) != 0x80u))
+            return false;
+        codepoint = first & (continuationCount == 1u
+                                  ? 0x1fu
+                                  : continuationCount == 2u ? 0x0fu : 0x07u);
+        while (continuationCount-- != 0u)
+            codepoint = (codepoint << 6u) | (value[index++] & 0x3fu);
+        if (codepoint < 0x80u ||
+            (codepoint < 0x800u && first >= 0xe0u) ||
+            (codepoint < 0x10000u && first >= 0xf0u) ||
+            (codepoint >= 0xd800u && codepoint <= 0xdfffu) ||
+            codepoint > 0x10ffffu)
+            return false;
+    }
+    return true;
+}
+
+bool mediaSessionTextValid(const char* text, uint32_t bytes) {
+    if (bytes >= RIN_MEDIA_SESSION_TEXT_CAPACITY || !text ||
+        text[bytes] != '\0' || !mediaSessionUtf8Valid(text, bytes))
+        return false;
+    for (uint32_t index = bytes + 1u;
+         index < RIN_MEDIA_SESSION_TEXT_CAPACITY; ++index)
+        if (text[index] != '\0') return false;
+    return true;
+}
+
+bool validSessionInfo(const RinMediaSessionInfoV1& info,
+                      bool requireZeroRevision) {
     return info.struct_size == sizeof(info) &&
-           info.version == RIN_MEDIA_SESSION_VERSION && info.revision == 0u;
+           info.version == RIN_MEDIA_SESSION_VERSION &&
+           (info.playback_state == RIN_MEDIA_SESSION_PLAYBACK_PAUSED ||
+            info.playback_state == RIN_MEDIA_SESSION_PLAYBACK_PLAYING) &&
+           info.control_flags != 0u &&
+           (info.control_flags & ~RIN_MEDIA_SESSION_CONTROL_ALL) == 0u &&
+           info.position_ms >= 0 && info.duration_ms >= 0 &&
+           (info.duration_ms == 0 || info.position_ms <= info.duration_ms) &&
+           (requireZeroRevision ? info.revision == 0u
+                                : info.revision != 0u) &&
+           info.revision != UINT64_MAX && info.reserved0 == 0u &&
+           mediaSessionTextValid(info.title, info.title_bytes) &&
+           mediaSessionTextValid(info.artist, info.artist_bytes) &&
+           mediaSessionTextValid(info.album, info.album_bytes);
+}
+
+bool validPublisherInfo(const RinMediaSessionInfoV1& info) {
+    return info.revision == 0u && validSessionInfo(info, true);
+}
+
+bool validPublishedInfo(const RinMediaSessionInfoV1& info) {
+    return validSessionInfo(info, false);
 }
 
 } // namespace
@@ -156,7 +220,8 @@ bool MediaSessionClient::publish(const RinMediaSessionInfoV1& info) {
                                 0u, &info, sizeof(info), &reply) ||
         reply.status != 0 || reply.payload_bytes != sizeof(published) ||
         !transferExact(fd, &published, sizeof(published), true) ||
-        published.session_id == 0u || published.revision == 0u) {
+        published.session_id == 0u || published.session_id == UINT64_MAX ||
+        published.revision == 0u || published.revision == UINT64_MAX) {
         if (fd >= 0) (void)::close(fd);
         error_ = "Media session service rejected publication";
         return false;
@@ -224,7 +289,9 @@ bool MediaSessionDesktopClient::queryActive(
         reply.payload_bytes != sizeof(session) + sizeof(info) ||
         !transferExact(fd, &session, sizeof(session), true) ||
         !transferExact(fd, &info, sizeof(info), true) || session.session_id == 0u ||
-        session.revision == 0u) {
+        session.session_id == UINT64_MAX || session.revision == 0u ||
+        session.revision == UINT64_MAX || session.revision != info.revision ||
+        !validPublishedInfo(info)) {
         if (fd >= 0) (void)::close(fd);
         error_ = "No active media session is available";
         return false;
