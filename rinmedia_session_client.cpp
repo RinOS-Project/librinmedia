@@ -255,7 +255,9 @@ bool MediaSessionClient::pollCommand(RinMediaSessionCommandMessageV1* command_ou
         reply.status != 0 || reply.payload_bytes != sizeof(command) ||
         !transferExact(socket_fd_, &command, sizeof(command), true) ||
         command.reserved0 != 0u ||
-        command.command > RIN_MEDIA_SESSION_COMMAND_STOP) {
+        command.command < RIN_MEDIA_SESSION_COMMAND_PLAY_PAUSE ||
+        command.command > RIN_MEDIA_SESSION_COMMAND_STOP ||
+        command.revision == 0u || command.revision == UINT64_MAX) {
         if (error_.empty()) error_ = "Media session command polling failed";
         reset();
         return false;
@@ -309,6 +311,7 @@ bool MediaSessionDesktopClient::dispatch(
     error_.clear();
     if (session_id == 0u || command.reserved0 != 0u ||
         command.revision == 0u ||
+        command.revision == UINT64_MAX ||
         command.command < RIN_MEDIA_SESSION_COMMAND_PLAY_PAUSE ||
         command.command > RIN_MEDIA_SESSION_COMMAND_STOP) {
         error_ = "Invalid media session command";
