@@ -107,6 +107,17 @@ bool validReply(const MediaDecodeHeaderV1& reply,
            reply.session_id == sessionId;
 }
 
+void clearReadOutput(Sample* destination, int maximumFrames,
+                     uint32_t channels) {
+    if (destination == nullptr || maximumFrames <= 0 || channels == 0u ||
+        channels > kAudioOutputMaxChannels)
+        return;
+    const std::size_t samples = static_cast<std::size_t>(maximumFrames) *
+                                static_cast<std::size_t>(channels);
+    if (samples > SIZE_MAX / sizeof(Sample)) return;
+    memset(destination, 0, samples * sizeof(Sample));
+}
+
 bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
                             const MediaDecodeOutputFormatV2& output,
                             int descriptor,
@@ -165,7 +176,9 @@ bool AudioDecoderClient::call(MediaDecodeOperation operation, const void* reques
                               bool honorCancellation) {
     MediaDecodeHeaderV1 header = {};
     MediaDecodeHeaderV1 response = {};
-    if (socket_fd_ < 0 || session_id_ == 0u || !reply) return false;
+    if (socket_fd_ < 0 || session_id_ == 0u || !reply ||
+        (requestBytes != 0u && request == nullptr))
+        return false;
     RinRuntimeCancellationFunction cancellation =
         honorCancellation ? cancellation_ : nullptr;
     void* cancellationContext = honorCancellation ? cancellation_context_ : nullptr;
@@ -321,20 +334,28 @@ int AudioDecoderClient::readFrames(Sample* destination, int maximumFrames) {
     MediaDecodeReadReplyV1 result = {};
     if (!destination || maximumFrames <= 0 ||
         maximumFrames > static_cast<int>(kMediaDecodeMaxFrames)) return -1;
-    const uint32_t maximumBytes = static_cast<uint32_t>(maximumFrames) *
-                                  output_format_.channels * sizeof(Sample);
+    if (!audioOutputFormatValid(output_format_)) return -1;
+    const std::size_t maximumBytesSize =
+        static_cast<std::size_t>(maximumFrames) *
+        static_cast<std::size_t>(output_format_.channels) * sizeof(Sample);
+    if (maximumBytesSize > UINT32_MAX) return -1;
+    clearReadOutput(destination, maximumFrames, output_format_.channels);
+    const auto failRead = [&]() -> int {
+        clearReadOutput(destination, maximumFrames, output_format_.channels);
+        reset();
+        return -1;
+    };
+    const uint32_t maximumBytes = static_cast<uint32_t>(maximumBytesSize);
     request.maximum_frames = static_cast<uint32_t>(maximumFrames);
     if (pollCancelled(cancellation_, cancellation_context_, &cancelled_)) {
         error_ = "メディアデコードがキャンセルされました";
-        reset();
-        return -1;
+        return failRead();
     }
     if (!call(MediaDecodeOperation::Read, &request, sizeof(request), &reply)) {
         if (error_.empty())
             error_ = cancelled_ ? "メディアデコードがキャンセルされました"
                                 : "Media decode service returned invalid audio";
-        reset();
-        return -1;
+        return failRead();
     }
     if (pollCancelled(cancellation_, cancellation_context_, &cancelled_) ||
         reply.status != 0 || reply.payload_bytes < sizeof(result) ||
@@ -349,8 +370,7 @@ int AudioDecoderClient::readFrames(Sample* destination, int maximumFrames) {
         if (error_.empty())
             error_ = cancelled_ ? "メディアデコードがキャンセルされました"
                                 : "Media decode service returned invalid audio";
-        reset();
-        return -1;
+        return failRead();
     }
     return static_cast<int>(result.frames);
 }
