@@ -152,6 +152,54 @@ struct AudioDecoder::Impl {
         return true;
     }
 
+    bool loadMetadata(AVDictionary* formatMetadata,
+                      AVDictionary* streamMetadata) {
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        try {
+#endif
+            std::string formatTitle;
+            std::string streamTitle;
+            std::string formatArtist;
+            std::string streamArtist;
+            std::string formatAlbum;
+            std::string streamAlbum;
+            if (!metadataValue(formatMetadata, "title", formatTitle) ||
+                !metadataValue(streamMetadata, "title", streamTitle) ||
+                !metadataValue(formatMetadata, "artist", formatArtist) ||
+                !metadataValue(streamMetadata, "artist", streamArtist) ||
+                !metadataValue(formatMetadata, "album", formatAlbum) ||
+                !metadataValue(streamMetadata, "album", streamAlbum)) {
+                setError("音声メタデータのサイズが上限を超えています");
+                return false;
+            }
+
+            AudioMetadata candidate;
+            candidate.title = formatTitle.empty() ? streamTitle : formatTitle;
+            candidate.artist = formatArtist.empty() ? streamArtist : formatArtist;
+            candidate.album = formatAlbum.empty() ? streamAlbum : formatAlbum;
+            if (format && format->duration > 0) {
+                candidate.durationMs =
+                    av_rescale(format->duration, 1000, AV_TIME_BASE);
+            } else {
+                AVStream* stream = format->streams[streamIndex];
+                if (stream->duration > 0)
+                    candidate.durationMs = av_rescale_q(
+                        stream->duration, stream->time_base, AVRational{1, 1000});
+            }
+
+            information.title.swap(candidate.title);
+            information.artist.swap(candidate.artist);
+            information.album.swap(candidate.album);
+            information.durationMs = candidate.durationMs;
+#if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+        } catch (...) {
+            setError("音声メタデータを確保できません");
+            return false;
+        }
+#endif
+        return true;
+    }
+
     bool initializeResampler(const AudioOutputFormat& requested) {
         AVChannelLayout outputLayout = {};
         SwrContext* replacement = nullptr;
@@ -422,37 +470,14 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
         close();
         return false;
     }
-    AVDictionary* streamMetadata = state.format->streams[state.streamIndex]->metadata;
-    std::string formatTitle;
-    std::string streamTitle;
-    std::string formatArtist;
-    std::string streamArtist;
-    std::string formatAlbum;
-    std::string streamAlbum;
-    if (!Impl::metadataValue(state.format->metadata, "title", formatTitle) ||
-        !Impl::metadataValue(streamMetadata, "title", streamTitle) ||
-        !Impl::metadataValue(state.format->metadata, "artist", formatArtist) ||
-        !Impl::metadataValue(streamMetadata, "artist", streamArtist) ||
-        !Impl::metadataValue(state.format->metadata, "album", formatAlbum) ||
-        !Impl::metadataValue(streamMetadata, "album", streamAlbum)) {
-        state.setError("音声メタデータのサイズが上限を超えています");
-        close();
-        return false;
-    }
     if (state.pollCancellation()) {
         close();
         return false;
     }
-    state.information.title = formatTitle.empty() ? streamTitle : formatTitle;
-    state.information.artist = formatArtist.empty() ? streamArtist : formatArtist;
-    state.information.album = formatAlbum.empty() ? streamAlbum : formatAlbum;
-    if (state.format->duration > 0) {
-        state.information.durationMs = av_rescale(state.format->duration, 1000, AV_TIME_BASE);
-    } else {
-        AVStream* stream = state.format->streams[state.streamIndex];
-        if (stream->duration > 0)
-            state.information.durationMs = av_rescale_q(
-                stream->duration, stream->time_base, AVRational{1, 1000});
+    if (!state.loadMetadata(state.format->metadata,
+                            state.format->streams[state.streamIndex]->metadata)) {
+        close();
+        return false;
     }
     return true;
 }
