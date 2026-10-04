@@ -122,6 +122,11 @@ side samples), checks every fixed/LPC prediction, decorrelation, and wasted-bit
 intermediate for signed `int64_t` overflow, and clears the output before
 publishing any failure. Frames, scratch, and output remain caller-owned.
 
+The common public `rinmedia` sanitizer corpus includes a deterministic
+one-frame constant FLAC stream, so metadata inspection, packet indexing, and
+the successful constant-subframe decode path are exercised without a service,
+filesystem, or hardware owner.
+
 The legacy `rinwav.h` S16 reader sign-extends 24-bit PCM before its bounded
 8-bit downshift and rejects non-finite IEEE float samples before conversion;
 the latter clears the requested output span and leaves the read position
