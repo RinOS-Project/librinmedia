@@ -20,6 +20,13 @@ uses only caller-owned input/output and the public C implementation. This
 coverage does not publish or exercise the private media-service or hardware
 decoder backends.
 
+The same public sanitizer target exercises `rinvideo.h` through a caller-owned
+pixel/audio buffer path, including malformed AVI rejection, bounded RAW frame
+decode, playback state transitions, and seek/update arithmetic. Its deterministic
+AVI seed is a one-frame public RAW fixture; JPEG payloads, full codec coverage,
+private service ownership, and device/hardware backends remain outside this
+target.
+
 The public demux packet table remains a caller-owned source view. When a
 consumer needs owned packet bytes, `rin_media_container_copy_packet()` copies
 one validated extent into a caller-owned buffer with a 1 MiB bound and a
