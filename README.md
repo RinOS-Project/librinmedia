@@ -57,6 +57,11 @@ infinity into an out-of-range integer or wrap the frame counter. This prevents
 long-running pure playback state from wrapping backward; decoder, filesystem,
 device, and hardware ownership remain outside the model.
 
+`rvid_close()` clears the complete borrowed player context, including the AVI
+metadata, callbacks, playback state, and frame-buffer pointer. A caller can
+therefore reuse the context after close without stale media bytes or owner
+state remaining visible.
+
 The legacy public PCM time query saturates its time-to-sample conversion,
 rejects audio chunk-size and sample-count overflow, and reads 16-bit PCM as
 little-endian bytes instead of relying on caller-buffer alignment. Its output

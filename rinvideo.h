@@ -319,8 +319,7 @@ static inline int rvid_open(RVidPlayer* player, const uint8_t* data, size_t size
  */
 static inline void rvid_close(RVidPlayer* player) {
     if (!player) return;
-    player->state = RVID_STATE_STOPPED;
-    player->frame_buffer = NULL;
+    rvid_clear_player(player);
 }
 
 /*
