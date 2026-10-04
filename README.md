@@ -69,6 +69,11 @@ remains caller-owned and the query does not acquire filesystem, device, or
 codec authority; malformed or unavailable AVI audio chunks remain errors
 instead of being reported as end-of-file.
 
+After valid PCM metadata admission, `rvid_get_audio_for_time()` clears the
+caller-provided frame span before scanning AVI chunks. A malformed or missing
+chunk therefore cannot leave stale PCM visible on failure; successful reads
+publish only the reported frame count and leave the remainder zeroed.
+
 `rvid_update()` also saturates its `int` decode-count result at `INT32_MAX`
 instead of narrowing large `uint32_t` frame deltas before subtraction.
 

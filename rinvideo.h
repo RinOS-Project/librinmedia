@@ -472,6 +472,11 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
          player->audio_info.bits_per_sample != 16))
         return RVID_DATA_ERROR;
 
+    size_t output_samples = (size_t)(unsigned)max_samples *
+                            (size_t)(unsigned)player->audio_info.channels;
+    if (output_samples > SIZE_MAX / sizeof(*output)) return RVID_DATA_ERROR;
+    for (size_t i = 0u; i < output_samples; ++i) output[i] = 0;
+
     /* 時間からサンプル位置を計算 */
     uint32_t target_sample = rvid_audio_sample_for_time(
         time_ms, player->audio_info.sample_rate);
