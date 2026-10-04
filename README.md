@@ -14,6 +14,12 @@ caller-owned S16 samples, rejects partial frames and non-finite float values,
 and clears the output on every failure. This packet helper is independent of
 filesystem, service, device, and hardware ownership.
 
+The public PCM packet decoder is connected to the root common sanitizer target
+(`python scripts/run_common_sanitizers.py --target rinmedia --smoke`), which
+uses only caller-owned input/output and the public C implementation. This
+coverage does not publish or exercise the private media-service or hardware
+decoder backends.
+
 The public demux packet table remains a caller-owned source view. When a
 consumer needs owned packet bytes, `rin_media_container_copy_packet()` copies
 one validated extent into a caller-owned buffer with a 1 MiB bound and a
