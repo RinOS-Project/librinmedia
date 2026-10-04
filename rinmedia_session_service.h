@@ -40,6 +40,15 @@ enum RinMediaSessionCommandV1 {
     (RIN_MEDIA_SESSION_CONTROL_PLAY_PAUSE | RIN_MEDIA_SESSION_CONTROL_NEXT | \
      RIN_MEDIA_SESSION_CONTROL_PREVIOUS | RIN_MEDIA_SESSION_CONTROL_STOP)
 
+/* `RinMediaSessionInfoV1::reserved0` is a bounded flag word.  Publishers set
+ * BACKGROUND_ALLOWED only after an explicit user opt-in and
+ * OUTPUT_AVAILABLE only while their audio owner reports a usable output. */
+#define RIN_MEDIA_SESSION_INFO_FLAG_BACKGROUND_ALLOWED UINT32_C(0x00000001)
+#define RIN_MEDIA_SESSION_INFO_FLAG_OUTPUT_AVAILABLE  UINT32_C(0x00000002)
+#define RIN_MEDIA_SESSION_INFO_FLAG_ALL \
+    (RIN_MEDIA_SESSION_INFO_FLAG_BACKGROUND_ALLOWED | \
+     RIN_MEDIA_SESSION_INFO_FLAG_OUTPUT_AVAILABLE)
+
 typedef struct RinMediaSessionHeaderV1 {
     uint32_t magic;
     uint32_t version;
@@ -65,7 +74,7 @@ typedef struct RinMediaSessionInfoV1 {
     uint32_t title_bytes;
     uint32_t artist_bytes;
     uint32_t album_bytes;
-    uint32_t reserved0;
+    uint32_t reserved0; /* RIN_MEDIA_SESSION_INFO_FLAG_* */
     char title[RIN_MEDIA_SESSION_TEXT_CAPACITY];
     char artist[RIN_MEDIA_SESSION_TEXT_CAPACITY];
     char album[RIN_MEDIA_SESSION_TEXT_CAPACITY];

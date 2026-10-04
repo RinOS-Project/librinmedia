@@ -168,7 +168,8 @@ bool validSessionInfo(const RinMediaSessionInfoV1& info,
            (info.duration_ms == 0 || info.position_ms <= info.duration_ms) &&
            (requireZeroRevision ? info.revision == 0u
                                 : info.revision != 0u) &&
-           info.revision != UINT64_MAX && info.reserved0 == 0u &&
+           info.revision != UINT64_MAX &&
+           (info.reserved0 & ~RIN_MEDIA_SESSION_INFO_FLAG_ALL) == 0u &&
            mediaSessionTextValid(info.title, info.title_bytes) &&
            mediaSessionTextValid(info.artist, info.artist_bytes) &&
            mediaSessionTextValid(info.album, info.album_bytes);
