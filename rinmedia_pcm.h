@@ -10,6 +10,8 @@
 #include <stdint.h>
 #endif
 
+#include "rinmedia_demux.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,6 +20,9 @@ extern "C" {
 #define RIN_MEDIA_PCM_MAX_CHANNELS UINT32_C(32)
 #define RIN_MEDIA_PCM_MAX_FRAMES UINT32_C(65536)
 #define RIN_MEDIA_PCM_MAX_INPUT_BYTES (UINT32_C(1024) * UINT32_C(1024))
+#define RIN_MEDIA_PCM_MAX_OUTPUT_SAMPLES \
+    (RIN_MEDIA_PCM_MAX_CHANNELS * RIN_MEDIA_PCM_MAX_FRAMES * \
+     RIN_MEDIA_DEMUX_MAX_PACKETS)
 
 typedef enum RinMediaPcmFormatV1 {
     RIN_MEDIA_PCM_FORMAT_U8 = 1,
@@ -58,6 +63,18 @@ int rin_media_pcm_decode_s16(
     const RinMediaPcmConfigV1* config, const uint8_t* input,
     size_t input_bytes, int16_t* output, size_t output_capacity_samples,
     size_t* frames_out);
+
+/* Decode every packet in a caller-owned, validated-shaped WAV packet table
+ * into one interleaved signed 16-bit span.  This public adapter accepts only
+ * WAV PCM or IEEE-float packet tables; ADPCM and other WAV codecs remain
+ * explicit unsupported boundaries.  It performs no filesystem, descriptor,
+ * service, or backend work.  Output and frames_out are failure-atomic. */
+int rin_media_pcm_decode_packet_table_s16(
+    const uint8_t* source, size_t source_bytes,
+    const RinMediaDemuxInfoV1* info,
+    const RinMediaDemuxPacketTableV1* packets,
+    const RinMediaPcmConfigV1* config, int16_t* output,
+    size_t output_capacity_samples, size_t* frames_out);
 
 #ifdef __cplusplus
 }

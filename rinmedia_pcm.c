@@ -4,6 +4,9 @@
 
 #include <string.h>
 
+static const uint32_t pcm_wav_format = UINT32_C(1);
+static const uint32_t pcm_wav_float_format = UINT32_C(3);
+
 static void pcm_zero(void* output, size_t bytes)
 {
     if (output != NULL && bytes != 0u) memset(output, 0, bytes);
@@ -157,4 +160,97 @@ int rin_media_pcm_decode_s16(
     }
     *frames_out = frames;
     return RIN_MEDIA_PCM_OK;
+}
+
+int rin_media_pcm_decode_packet_table_s16(
+    const uint8_t* source, size_t source_bytes,
+    const RinMediaDemuxInfoV1* info,
+    const RinMediaDemuxPacketTableV1* packets,
+    const RinMediaPcmConfigV1* config, int16_t* output,
+    size_t output_capacity_samples, size_t* frames_out)
+{
+    size_t total_frames = 0u;
+    uint64_t previous_end = 0u;
+    uint32_t packet_index;
+    int table_valid;
+
+    if (frames_out != NULL) *frames_out = 0u;
+    if (output != NULL && output_capacity_samples <=
+        SIZE_MAX / sizeof(*output))
+        pcm_zero(output, output_capacity_samples * sizeof(*output));
+    table_valid = source != NULL && source_bytes != 0u &&
+                  source_bytes <= RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES &&
+                  info != NULL && packets != NULL && config != NULL &&
+                  output != NULL && frames_out != NULL &&
+                  output_capacity_samples <=
+                      (size_t)RIN_MEDIA_PCM_MAX_OUTPUT_SAMPLES &&
+                  info->struct_size == sizeof(*info) &&
+                  info->abi_version == RIN_MEDIA_DEMUX_ABI_V1 &&
+                  info->container_id == RIN_MEDIA_CONTAINER_WAV &&
+                  info->track_count == 1u &&
+                  info->tracks[0].track_id == 1u &&
+                  info->tracks[0].kind == RIN_MEDIA_DEMUX_TRACK_AUDIO &&
+                  info->tracks[0].time_scale != 0u &&
+                  packets->struct_size == sizeof(*packets) &&
+                  packets->abi_version == RIN_MEDIA_DEMUX_ABI_V1 &&
+                  packets->reserved0 == 0u && packets->packet_count != 0u &&
+                  packets->packet_count <= RIN_MEDIA_DEMUX_MAX_PACKETS &&
+                  rin_media_pcm_config_valid(config) &&
+                  config->sample_rate == info->tracks[0].time_scale &&
+                  ((config->format == RIN_MEDIA_PCM_FORMAT_F32LE &&
+                    info->tracks[0].codec_id == pcm_wav_float_format) ||
+                   (config->format != RIN_MEDIA_PCM_FORMAT_F32LE &&
+                    info->tracks[0].codec_id == pcm_wav_format));
+    if (!table_valid) return RIN_MEDIA_PCM_INVALID;
+
+    for (packet_index = 0u; packet_index < packets->packet_count;
+         ++packet_index) {
+        const RinMediaDemuxPacketV1* packet = &packets->packets[packet_index];
+        size_t decoded_frames = 0u;
+        uint64_t packet_end;
+        int result;
+        if (packet->track_id != info->tracks[0].track_id ||
+            packet->byte_size == 0u ||
+            packet->byte_size > RIN_MEDIA_PCM_MAX_INPUT_BYTES ||
+            packet->byte_offset > (uint64_t)source_bytes ||
+            packet->byte_size > source_bytes -
+                                    (size_t)packet->byte_offset ||
+            (packet_index != 0u && packet->byte_offset < previous_end) ||
+            packet->timestamp_ticks != total_frames ||
+            packet->duration_ticks == 0u ||
+            UINT64_MAX - packet->byte_offset < packet->byte_size)
+            goto malformed;
+        packet_end = packet->byte_offset + packet->byte_size;
+        previous_end = packet_end;
+        if (total_frames > output_capacity_samples)
+            goto output_too_small;
+        result = rin_media_pcm_decode_s16(
+            config, source + (size_t)packet->byte_offset, packet->byte_size,
+            output + total_frames * (size_t)config->channels,
+            output_capacity_samples -
+                total_frames * (size_t)config->channels,
+            &decoded_frames);
+        if (result != RIN_MEDIA_PCM_OK) {
+            pcm_zero(output, output_capacity_samples * sizeof(*output));
+            return result;
+        }
+        if (decoded_frames != packet->duration_ticks ||
+            total_frames > SIZE_MAX - decoded_frames ||
+            total_frames + decoded_frames > RIN_MEDIA_PCM_MAX_FRAMES *
+                                             RIN_MEDIA_DEMUX_MAX_PACKETS)
+            goto malformed;
+        total_frames += decoded_frames;
+    }
+    if (info->duration_ticks != 0u &&
+        info->duration_ticks != total_frames)
+        goto malformed;
+    *frames_out = total_frames;
+    return RIN_MEDIA_PCM_OK;
+
+output_too_small:
+    pcm_zero(output, output_capacity_samples * sizeof(*output));
+    return RIN_MEDIA_PCM_OUTPUT_TOO_SMALL;
+malformed:
+    pcm_zero(output, output_capacity_samples * sizeof(*output));
+    return RIN_MEDIA_PCM_INVALID;
 }

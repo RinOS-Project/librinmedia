@@ -14,6 +14,14 @@ caller-owned S16 samples, rejects partial frames and non-finite float values,
 and clears the output on every failure. This packet helper is independent of
 filesystem, service, device, and hardware ownership.
 
+`rin_media_pcm_decode_packet_table_s16()` connects that decoder to a
+caller-owned public WAV packet table. It validates the WAV audio track,
+packet bounds/order/timestamps, per-packet frame duration, aggregate duration,
+and bounded output capacity before appending each U8/S8/S16LE/S24LE/S32LE or
+F32LE packet to one interleaved S16 span. The adapter remains independent of
+filesystem, descriptor, media-service, and hardware ownership; ADPCM and
+other non-PCM WAV codecs remain explicit unsupported boundaries.
+
 The public PCM packet decoder is connected to the root common sanitizer target
 (`python scripts/run_common_sanitizers.py --target rinmedia --smoke`), which
 uses only caller-owned input/output and the public C implementation. This
