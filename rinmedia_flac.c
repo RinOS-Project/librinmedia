@@ -430,7 +430,7 @@ static int decode_subframe(BitReader* reader, int64_t* samples,
 static void clear_output(int32_t* output, size_t output_samples)
 {
     if (output != NULL && output_samples <=
-        (size_t)RIN_MEDIA_FLAC_MAX_CHANNELS * RIN_MEDIA_FLAC_MAX_BLOCK_SAMPLES)
+        (size_t)RIN_MEDIA_FLAC_MAX_OUTPUT_SAMPLES)
         memset(output, 0, output_samples * sizeof(*output));
 }
 
@@ -584,4 +584,94 @@ int rin_media_flac_decode_frame(
     *block_samples_out = block_samples;
     result = RIN_MEDIA_FLAC_DECODE_OK;
     return result;
+}
+
+int rin_media_flac_decode_packet_table(
+    const uint8_t* source, size_t source_bytes,
+    const RinMediaDemuxInfoV1* info,
+    const RinMediaDemuxPacketTableV1* packets,
+    const RinMediaFlacDecodeRequestV1* request, int64_t* scratch,
+    size_t scratch_samples, int32_t* output, size_t output_samples,
+    size_t* samples_written)
+{
+    const uint32_t flac_fourcc = UINT32_C(0x664c6143);
+    size_t total_samples = 0u;
+    uint64_t total_duration = 0u;
+    uint64_t previous_end = 0u;
+    uint32_t packet_index;
+
+    if (samples_written != NULL) *samples_written = 0u;
+    clear_output(output, output_samples);
+    if (source == NULL || source_bytes == 0u ||
+        source_bytes > RIN_MEDIA_CONTAINER_PROBE_MAX_BYTES || info == NULL ||
+        packets == NULL || request == NULL || scratch == NULL ||
+        output == NULL || samples_written == NULL ||
+        output_samples > (size_t)RIN_MEDIA_FLAC_MAX_OUTPUT_SAMPLES ||
+        info->struct_size != sizeof(*info) ||
+        info->abi_version != RIN_MEDIA_DEMUX_ABI_V1 ||
+        info->container_id != RIN_MEDIA_CONTAINER_FLAC ||
+        info->track_count != 1u || info->tracks[0].track_id == 0u ||
+        info->tracks[0].kind != RIN_MEDIA_DEMUX_TRACK_AUDIO ||
+        info->tracks[0].codec_id != flac_fourcc ||
+        info->tracks[0].time_scale == 0u ||
+        packets->struct_size != sizeof(*packets) ||
+        packets->abi_version != RIN_MEDIA_DEMUX_ABI_V1 ||
+        packets->reserved0 != 0u || packets->packet_count == 0u ||
+        packets->packet_count > RIN_MEDIA_DEMUX_MAX_PACKETS ||
+        request->struct_size != sizeof(*request) ||
+        request->abi_version != RIN_MEDIA_FLAC_ABI_V1)
+        return RIN_MEDIA_FLAC_DECODE_INVALID;
+
+    for (packet_index = 0u; packet_index < packets->packet_count;
+         ++packet_index) {
+        const RinMediaDemuxPacketV1* packet = &packets->packets[packet_index];
+        uint64_t packet_end;
+        size_t frame_samples = 0u;
+        uint32_t block_samples = 0u;
+        int result;
+        if (packet->track_id != info->tracks[0].track_id ||
+            packet->byte_size == 0u ||
+            packet->byte_size > RIN_MEDIA_FLAC_MAX_FRAME_BYTES ||
+            packet->byte_offset > (uint64_t)source_bytes ||
+            packet->byte_size > source_bytes -
+                                    (size_t)packet->byte_offset ||
+            (packet_index != 0u && packet->byte_offset < previous_end) ||
+            packet->duration_ticks == 0u ||
+            UINT64_MAX - packet->byte_offset < packet->byte_size)
+            goto malformed;
+        packet_end = packet->byte_offset + packet->byte_size;
+        previous_end = packet_end;
+        if (UINT64_MAX - total_duration < packet->duration_ticks)
+            goto malformed;
+        total_duration += packet->duration_ticks;
+        if (total_samples > output_samples)
+            goto output_too_small;
+        result = rin_media_flac_decode_frame(
+            source + (size_t)packet->byte_offset, packet->byte_size, request,
+            scratch, scratch_samples, output + total_samples,
+            output_samples - total_samples, &frame_samples,
+            &block_samples);
+        if (result != RIN_MEDIA_FLAC_DECODE_OK) {
+            clear_output(output, output_samples);
+            return result;
+        }
+        if (frame_samples != (size_t)request->channels * block_samples ||
+            packet->duration_ticks != block_samples ||
+            frame_samples > output_samples - total_samples ||
+            total_samples > (size_t)RIN_MEDIA_FLAC_MAX_OUTPUT_SAMPLES -
+                                 frame_samples)
+            goto malformed;
+        total_samples += frame_samples;
+    }
+    if (info->duration_ticks != 0u && total_duration != info->duration_ticks)
+        goto malformed;
+    *samples_written = total_samples;
+    return RIN_MEDIA_FLAC_DECODE_OK;
+
+output_too_small:
+    clear_output(output, output_samples);
+    return RIN_MEDIA_FLAC_DECODE_OUTPUT_TOO_SMALL;
+malformed:
+    clear_output(output, output_samples);
+    return RIN_MEDIA_FLAC_DECODE_MALFORMED;
 }

@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "rinmedia_demux.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -13,6 +15,9 @@ extern "C" {
 #define RIN_MEDIA_FLAC_MAX_CHANNELS 8u
 #define RIN_MEDIA_FLAC_MAX_BLOCK_SAMPLES 65536u
 #define RIN_MEDIA_FLAC_MAX_FRAME_BYTES (1024u * 1024u)
+#define RIN_MEDIA_FLAC_MAX_OUTPUT_SAMPLES \
+    (RIN_MEDIA_FLAC_MAX_CHANNELS * RIN_MEDIA_FLAC_MAX_BLOCK_SAMPLES * \
+     RIN_MEDIA_DEMUX_MAX_PACKETS)
 
 enum {
     RIN_MEDIA_FLAC_DECODE_OK = 0,
@@ -44,6 +49,20 @@ int rin_media_flac_decode_frame(
     size_t scratch_samples, int32_t* output,
     size_t output_samples, size_t* samples_written,
     uint32_t* block_samples_out);
+
+/* Decode every packet in a validated, caller-owned FLAC packet table into one
+ * interleaved signed-sample span.  The packet table is the public demux
+ * source view; this helper performs no filesystem, descriptor, service, or
+ * codec-backend work.  Output and samples_written are failure-atomic, and a
+ * packet duration must agree with the decoded block size before any samples
+ * are published. */
+int rin_media_flac_decode_packet_table(
+    const uint8_t* source, size_t source_bytes,
+    const RinMediaDemuxInfoV1* info,
+    const RinMediaDemuxPacketTableV1* packets,
+    const RinMediaFlacDecodeRequestV1* request, int64_t* scratch,
+    size_t scratch_samples, int32_t* output, size_t output_samples,
+    size_t* samples_written);
 
 #ifdef __cplusplus
 }
