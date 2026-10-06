@@ -207,6 +207,7 @@ int rin_media_pcm_decode_packet_table_s16(
          ++packet_index) {
         const RinMediaDemuxPacketV1* packet = &packets->packets[packet_index];
         size_t decoded_frames = 0u;
+        size_t output_offset;
         uint64_t packet_end;
         int result;
         if (packet->track_id != info->tracks[0].track_id ||
@@ -222,13 +223,14 @@ int rin_media_pcm_decode_packet_table_s16(
             goto malformed;
         packet_end = packet->byte_offset + packet->byte_size;
         previous_end = packet_end;
-        if (total_frames > output_capacity_samples)
+        if (total_frames > SIZE_MAX / (size_t)config->channels)
+            goto malformed;
+        output_offset = total_frames * (size_t)config->channels;
+        if (output_offset > output_capacity_samples)
             goto output_too_small;
         result = rin_media_pcm_decode_s16(
             config, source + (size_t)packet->byte_offset, packet->byte_size,
-            output + total_frames * (size_t)config->channels,
-            output_capacity_samples -
-                total_frames * (size_t)config->channels,
+            output + output_offset, output_capacity_samples - output_offset,
             &decoded_frames);
         if (result != RIN_MEDIA_PCM_OK) {
             pcm_zero(output, output_capacity_samples * sizeof(*output));

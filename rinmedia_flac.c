@@ -597,6 +597,7 @@ int rin_media_flac_decode_packet_table(
     const uint32_t flac_fourcc = UINT32_C(0x664c6143);
     size_t total_samples = 0u;
     uint64_t total_duration = 0u;
+    uint64_t expected_timestamp = 0u;
     uint64_t previous_end = 0u;
     uint32_t packet_index;
 
@@ -636,6 +637,7 @@ int rin_media_flac_decode_packet_table(
             packet->byte_size > source_bytes -
                                     (size_t)packet->byte_offset ||
             (packet_index != 0u && packet->byte_offset < previous_end) ||
+            packet->timestamp_ticks != expected_timestamp ||
             packet->duration_ticks == 0u ||
             UINT64_MAX - packet->byte_offset < packet->byte_size)
             goto malformed;
@@ -644,6 +646,7 @@ int rin_media_flac_decode_packet_table(
         if (UINT64_MAX - total_duration < packet->duration_ticks)
             goto malformed;
         total_duration += packet->duration_ticks;
+        expected_timestamp = total_duration;
         if (total_samples > output_samples)
             goto output_too_small;
         result = rin_media_flac_decode_frame(
