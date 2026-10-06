@@ -135,14 +135,22 @@ struct AudioDecoder::Impl {
             off_t current = lseek(self->file, 0, SEEK_CUR);
             off_t end = current < 0 ? -1 : lseek(self->file, 0, SEEK_END);
             if (current >= 0) (void)lseek(self->file, current, SEEK_SET);
-            return end < 0 ? AVERROR(EIO) : static_cast<int64_t>(end);
+            if (end < 0) return AVERROR(EIO);
+            if (static_cast<uint64_t>(end) > kMaxInputBytes ||
+                static_cast<uint64_t>(end) > static_cast<uint64_t>(INT64_MAX))
+                return AVERROR(EFBIG);
+            return static_cast<int64_t>(end);
         }
         whence &= ~AVSEEK_FORCE;
         if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) {
             return AVERROR(EINVAL);
         }
         off_t result = lseek(self->file, static_cast<off_t>(offset), whence);
-        return result < 0 ? AVERROR(EIO) : static_cast<int64_t>(result);
+        if (result < 0) return AVERROR(EIO);
+        if (static_cast<uint64_t>(result) > kMaxInputBytes ||
+            static_cast<uint64_t>(result) > static_cast<uint64_t>(INT64_MAX))
+            return AVERROR(EFBIG);
+        return static_cast<int64_t>(result);
     }
 
     void setError(const char* message, int code = 0) {
