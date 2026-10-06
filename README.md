@@ -14,6 +14,9 @@ stream time bases or saturated seek timestamps. AAC/Opus/Vorbis/FLAC decode
 still uses the configured FFmpeg profile; this boundary does not grant a
 caller filesystem, media-service, keyring, or hardware authority.
 
+The same admission path rejects an invalid selected stream index or codec
+sample-rate/channel shape before allocating and populating `AVCodecContext`.
+
 `rinmedia_pcm.h` also exposes an allocation-free public PCM packet decoder.
 It converts bounded interleaved U8/S8/S16LE/S24LE/S32LE/F32LE packets into
 caller-owned S16 samples, rejects partial frames and non-finite float values,

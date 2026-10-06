@@ -438,13 +438,29 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
         close();
         return false;
     }
-    AVCodecParameters* codecParameters =
-        state.format->streams[state.streamIndex]->codecpar;
-    if (!codecParameters || codecParameters->extradata_size < 0 ||
+    if (state.streamIndex < 0 ||
+        static_cast<unsigned int>(state.streamIndex) >= state.format->nb_streams) {
+        state.setError("音声ストリーム番号が不正です");
+        close();
+        return false;
+    }
+    AVStream* audioStream = state.format->streams[state.streamIndex];
+    AVCodecParameters* codecParameters = audioStream ? audioStream->codecpar : nullptr;
+    if (!audioStream || audioStream->time_base.num <= 0 ||
+        audioStream->time_base.den <= 0) {
+        state.setError("音声の時刻基準が不正です");
+        close();
+        return false;
+    }
+    if (!codecParameters || codecParameters->sample_rate <= 0 ||
+        codecParameters->sample_rate > kMaxSampleRate ||
+        codecParameters->ch_layout.nb_channels < 0 ||
+        codecParameters->ch_layout.nb_channels > kMaxChannels ||
+        codecParameters->extradata_size < 0 ||
         codecParameters->extradata_size > kMaxCodecExtradataBytes ||
         (codecParameters->extradata_size != 0 &&
          codecParameters->extradata == nullptr)) {
-        state.setError("音声codec補助データのサイズが上限を超えています");
+        state.setError("音声codec parameterの範囲が不正です");
         close();
         return false;
     }
