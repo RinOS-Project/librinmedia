@@ -38,6 +38,11 @@ constexpr size_t kMaxPendingSamples = static_cast<size_t>(kMaxFrameSamples) *
                                       kAudioOutputMaxChannels;
 constexpr size_t kMaxMetadataBytes = 4096u;
 constexpr int kMaxPacketBytes = 16 * 1024 * 1024;
+/* FFmpeg copies codec extradata into AVCodecContext during admission. Keep
+ * that allocation bounded independently from the packet limit so a hostile
+ * AAC/Opus/Vorbis header cannot turn a public descriptor open into an
+ * unbounded side allocation. */
+constexpr int kMaxCodecExtradataBytes = 1 * 1024 * 1024;
 constexpr int kMaxChannels = 32;
 constexpr int kMaxSampleRate = 384000;
 constexpr int kMaxAlbumArtBytes = 4 * 1024 * 1024;
@@ -433,6 +438,16 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
         close();
         return false;
     }
+    AVCodecParameters* codecParameters =
+        state.format->streams[state.streamIndex]->codecpar;
+    if (!codecParameters || codecParameters->extradata_size < 0 ||
+        codecParameters->extradata_size > kMaxCodecExtradataBytes ||
+        (codecParameters->extradata_size != 0 &&
+         codecParameters->extradata == nullptr)) {
+        state.setError("音声codec補助データのサイズが上限を超えています");
+        close();
+        return false;
+    }
     for (unsigned int index = 0; index < state.format->nb_streams; ++index) {
         AVStream* stream = state.format->streams[index];
         if (!stream) continue;
@@ -449,8 +464,7 @@ bool AudioDecoder::openDescriptor(int descriptor, const AudioOutputFormat& outpu
         close();
         return false;
     }
-    result = avcodec_parameters_to_context(
-        state.codec, state.format->streams[state.streamIndex]->codecpar);
+    result = avcodec_parameters_to_context(state.codec, codecParameters);
     if (result < 0 || (result = avcodec_open2(state.codec, decoder, nullptr)) < 0) {
         state.setError("音声デコーダーを開始できません", result);
         close();
@@ -561,7 +575,15 @@ bool AudioDecoder::seek(Milliseconds positionMs) {
     Impl& state = *implementation;
     if (state.pollCancellation()) return false;
     AVStream* stream = state.format->streams[state.streamIndex];
+    if (!stream || stream->time_base.num <= 0 || stream->time_base.den <= 0) {
+        state.setError("音声の時刻基準が不正です");
+        return false;
+    }
     int64_t timestamp = av_rescale_q(positionMs, AVRational{1, 1000}, stream->time_base);
+    if (timestamp < 0 || timestamp == INT64_MAX) {
+        state.setError("指定位置の時刻が大きすぎます");
+        return false;
+    }
     int result = av_seek_frame(state.format, state.streamIndex, timestamp, AVSEEK_FLAG_BACKWARD);
     if (state.cancelled) return false;
     if (result < 0) {

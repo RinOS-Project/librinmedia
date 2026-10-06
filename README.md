@@ -8,6 +8,12 @@ waits use the public `RinRuntime::PollEventLoopBackend` userspace adapter.
 They do not expose the private RinOS wait-set backend or kernel readiness
 producer, and an unavailable media service is still reported as failure.
 
+The public `RinMedia::AudioDecoder` descriptor path also bounds FFmpeg codec
+extradata to 1 MiB before `AVCodecContext` admission and rejects malformed
+stream time bases or saturated seek timestamps. AAC/Opus/Vorbis/FLAC decode
+still uses the configured FFmpeg profile; this boundary does not grant a
+caller filesystem, media-service, keyring, or hardware authority.
+
 `rinmedia_pcm.h` also exposes an allocation-free public PCM packet decoder.
 It converts bounded interleaved U8/S8/S16LE/S24LE/S32LE/F32LE packets into
 caller-owned S16 samples, rejects partial frames and non-finite float values,
