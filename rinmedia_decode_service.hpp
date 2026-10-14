@@ -26,7 +26,10 @@ enum class MediaDecodeOperation : uint16_t {
 
 /* The request uses status == 0.  Responses echo operation/request_id and use
  * a negative status on rejection; no caller-supplied pointer or pathname is
- * ever serialised. */
+ * ever serialised. OPEN is a fixed-size stream frame (header followed by
+ * output format); its one SCM_RIGHTS descriptor accompanies the first byte.
+ * Both peers use exact-length I/O because SOCK_STREAM does not preserve frame
+ * boundaries. The daemon rejects ancillary data on later fragments. */
 struct MediaDecodeHeaderV1 {
     uint32_t magic;
     uint32_t version;

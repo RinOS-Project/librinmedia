@@ -14,6 +14,7 @@ namespace RinMedia {
 namespace {
 
 constexpr uint32_t kIoIdleLimit = 5u;
+constexpr uint32_t kIoInterruptionLimit = 32u;
 constexpr uint32_t kAutostartRetryMs = 25u;
 constexpr uint32_t kAutostartBudgetMs = 500u;
 
@@ -32,6 +33,7 @@ bool transferExact(int fd, void* bytes, uint32_t size, bool receive,
     uint8_t* cursor = static_cast<uint8_t*>(bytes);
     uint32_t offset = 0u;
     uint32_t idle = 0u;
+    uint32_t interrupted = 0u;
     while (offset < size) {
         if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
         const auto wait_status = detail::waitForMediaFd(
@@ -46,9 +48,14 @@ bool transferExact(int fd, void* bytes, uint32_t size, bool receive,
         const ssize_t count = receive
             ? recv(fd, cursor + offset, static_cast<size_t>(size - offset), 0)
             : send(fd, cursor + offset, static_cast<size_t>(size - offset), MSG_NOSIGNAL);
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= kIoInterruptionLimit) return false;
+            continue;
+        }
         if (count <= 0 || static_cast<uint32_t>(count) > size - offset) return false;
         offset += static_cast<uint32_t>(count);
         idle = 0u;
+        interrupted = 0u;
     }
     return true;
 }
@@ -123,16 +130,17 @@ bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
                             int descriptor,
                             RinRuntimeCancellationFunction cancellation,
                             void* cancellationContext, bool* cancelled) {
-    iovec iov[2] = {};
+    uint8_t frame[sizeof(request) + sizeof(output)] = {};
+    iovec iov = {};
     alignas(struct cmsghdr) uint8_t control[CMSG_SPACE(sizeof(int))] = {};
     msghdr message = {};
     cmsghdr* cmsg;
-    iov[0].iov_base = const_cast<MediaDecodeHeaderV1*>(&request);
-    iov[0].iov_len = sizeof(request);
-    iov[1].iov_base = const_cast<MediaDecodeOutputFormatV2*>(&output);
-    iov[1].iov_len = sizeof(output);
-    message.msg_iov = iov;
-    message.msg_iovlen = 2u;
+    memcpy(frame, &request, sizeof(request));
+    memcpy(frame + sizeof(request), &output, sizeof(output));
+    iov.iov_base = frame;
+    iov.iov_len = sizeof(frame);
+    message.msg_iov = &iov;
+    message.msg_iovlen = 1u;
     message.msg_control = control;
     message.msg_controllen = sizeof(control);
     cmsg = CMSG_FIRSTHDR(&message);
@@ -141,13 +149,40 @@ bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
     cmsg->cmsg_level = SOL_SOCKET;
     cmsg->cmsg_type = SCM_RIGHTS;
     memcpy(CMSG_DATA(cmsg), &descriptor, sizeof(descriptor));
-    if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
-    if (detail::waitForMediaFd(fd, RinRuntime::EventLoop::WAIT_WRITABLE) !=
-            detail::MediaWaitStatus::Ready ||
-        pollCancelled(cancellation, cancellationContext, cancelled))
-        return false;
-    return sendmsg(fd, &message, MSG_NOSIGNAL) ==
-           static_cast<ssize_t>(sizeof(request) + sizeof(output));
+    uint32_t offset = 0u;
+    uint32_t idle = 0u;
+    uint32_t interrupted = 0u;
+    while (offset < sizeof(frame)) {
+        if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
+        const auto wait = detail::waitForMediaFd(
+            fd, RinRuntime::EventLoop::WAIT_WRITABLE);
+        if (wait == detail::MediaWaitStatus::Timeout) {
+            if (++idle >= kIoIdleLimit) return false;
+            continue;
+        }
+        if (wait != detail::MediaWaitStatus::Ready ||
+            pollCancelled(cancellation, cancellationContext, cancelled))
+            return false;
+
+        iov.iov_base = frame + offset;
+        iov.iov_len = sizeof(frame) - offset;
+        const ssize_t count = offset == 0u
+            ? sendmsg(fd, &message, MSG_NOSIGNAL)
+            : send(fd, frame + offset, sizeof(frame) - offset, MSG_NOSIGNAL);
+        if (count < 0 && errno == EINTR) {
+            if (++interrupted >= kIoInterruptionLimit) return false;
+            continue;
+        }
+        if (count <= 0 || static_cast<size_t>(count) > sizeof(frame) - offset)
+            return false;
+        offset += static_cast<uint32_t>(count);
+        idle = 0u;
+        interrupted = 0u;
+        /* SCM_RIGHTS is attached only to the first stream fragment. */
+        message.msg_control = nullptr;
+        message.msg_controllen = 0u;
+    }
+    return true;
 }
 
 MediaDecodeOutputFormatV2 wireOutput(const AudioOutputFormat& output) {
