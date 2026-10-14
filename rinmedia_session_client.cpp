@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "rinmedia_session_client.hpp"
 #include "rinmedia_event_loop.hpp"
+#include "rinmedia_private_socket.hpp"
 
 #include "../libc/errno.h"
 #include "../libc/string.h"
@@ -54,7 +55,7 @@ bool serviceIdentityValid(int fd) {
 
 int connectOnce() {
     sockaddr_un address = {};
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = detail::createPrivateUnixStreamSocket();
     if (fd < 0) return -1;
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, RIN_MEDIA_SESSION_SOCKET_PATH,

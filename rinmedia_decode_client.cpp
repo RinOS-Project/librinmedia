@@ -2,6 +2,7 @@
 
 #include "rinmedia_decode_service.hpp"
 #include "rinmedia_event_loop.hpp"
+#include "rinmedia_private_socket.hpp"
 
 #include "../libc/string.h"
 #include "../libc/sys/socket.h"
@@ -74,7 +75,7 @@ int connectOnce(RinRuntimeCancellationFunction cancellation,
                 void* cancellationContext, bool* cancelled) {
     if (pollCancelled(cancellation, cancellationContext, cancelled)) return -1;
     sockaddr_un address = {};
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int fd = detail::createPrivateUnixStreamSocket();
     if (fd < 0) return -1;
     address.sun_family = AF_UNIX;
     strncpy(address.sun_path, kMediaDecodeSocketPath,
