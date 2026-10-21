@@ -4,8 +4,8 @@
 #ifndef RIN_MEDIA_FRAMEWORK_HPP
 #define RIN_MEDIA_FRAMEWORK_HPP
 
-#include "../libc/stddef.h"
-#include "../libc/stdint.h"
+#include <stddef.h>
+#include <stdint.h>
 
 namespace RinMedia {
 

@@ -3,13 +3,13 @@
 #include "rinmedia_event_loop.hpp"
 #include "rinmedia_private_socket.hpp"
 
-#include "../libc/errno.h"
-#include "../libc/string.h"
-#include "../libc/sys/socket.h"
-#include "../libc/sys/un.h"
-#include "../libc/unistd.h"
-#include "../../RinOS-SDK/include/rin/service.h"
-#include "../../RinOS-SDK/include/rin/socket_abi.h"
+#include <errno.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <rin/service.h>
+#include <rin/socket_abi.h>
 
 namespace RinMedia {
 namespace {

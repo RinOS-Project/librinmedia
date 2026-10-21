@@ -2,9 +2,9 @@
 #ifndef RIN_MEDIA_AUDIO_DECODER_HPP
 #define RIN_MEDIA_AUDIO_DECODER_HPP
 
-#include "../libc/stdint.h"
-#include "../libc/stddef.h"
-#include "../libcxx/string.h"
+#include <stdint.h>
+#include <stddef.h>
+#include <libcxx/string.h>
 #include <rinruntime/cancellation.h>
 
 namespace RinMedia {

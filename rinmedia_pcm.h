@@ -3,8 +3,8 @@
 #define RIN_MEDIA_PCM_H
 
 #if defined(RIN_FREESTANDING)
-#include "../libc/stddef.h"
-#include "../libc/stdint.h"
+#include <stddef.h>
+#include <stdint.h>
 #else
 #include <stddef.h>
 #include <stdint.h>

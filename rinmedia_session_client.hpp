@@ -4,7 +4,7 @@
 
 #include "rinmedia_session_service.h"
 
-#include "../libcxx/string.h"
+#include <libcxx/string.h>
 
 namespace RinMedia {
 
