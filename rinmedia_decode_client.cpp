@@ -453,11 +453,14 @@ bool AudioDecoderClient::seek(Milliseconds positionMs) {
         if (error_.empty()) error_ = "Media decode seek failed";
         return false;
     }
-    if (pollCancelled(cancellation_, cancellation_context_, &cancelled_) ||
-        reply.status != 0 || reply.payload_bytes != 0u) {
+    if (pollCancelled(cancellation_, cancellation_context_, &cancelled_)) {
+        error_ = "メディアデコードがキャンセルされました";
+        reset();
+        return false;
+    }
+    if (reply.status != 0 || reply.payload_bytes != 0u) {
         if (error_.empty())
-            error_ = cancelled_ ? "メディアデコードがキャンセルされました"
-                                : "Media decode seek failed";
+            error_ = "Media decode seek failed";
         return false;
     }
     return true;
