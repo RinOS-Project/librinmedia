@@ -5,6 +5,8 @@
 #include "rinmedia_private_socket.hpp"
 
 #include <string.h>
+#include <fcntl.h>
+#include <stdio.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -19,6 +21,7 @@ constexpr uint32_t kIoInterruptionLimit = 32u;
 constexpr uint32_t kIoReadinessRaceLimit = 32u;
 constexpr uint32_t kAutostartRetryMs = 25u;
 constexpr uint32_t kAutostartBudgetMs = 500u;
+constexpr size_t kSourceSnapshotChunkBytes = 64u * 1024u;
 
 extern "C" void rin_sleep(unsigned int milliseconds);
 
@@ -199,6 +202,25 @@ bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
     return true;
 }
 
+bool writeSourceSnapshot(FILE* stream, const void* source,
+                         uint64_t sourceBytes,
+                         RinRuntimeCancellationFunction cancellation,
+                         void* cancellationContext, bool* cancelled) {
+    const uint8_t* cursor = static_cast<const uint8_t*>(source);
+    uint64_t remaining = sourceBytes;
+    while (remaining != 0u) {
+        if (pollCancelled(cancellation, cancellationContext, cancelled))
+            return false;
+        const size_t chunk = remaining < kSourceSnapshotChunkBytes
+            ? static_cast<size_t>(remaining)
+            : kSourceSnapshotChunkBytes;
+        if (fwrite(cursor, 1u, chunk, stream) != chunk) return false;
+        cursor += chunk;
+        remaining -= chunk;
+    }
+    return ferror(stream) == 0;
+}
+
 MediaDecodeOutputFormatV2 wireOutput(const AudioOutputFormat& output) {
     MediaDecodeOutputFormatV2 wire = {};
     wire.sample_rate = output.sampleRate;
@@ -354,6 +376,64 @@ bool AudioDecoderClient::openDescriptor(int descriptor,
     metadata_.artist.swap(candidateMetadata.artist);
     metadata_.album.swap(candidateMetadata.album);
     return true;
+}
+
+bool AudioDecoderClient::openBytes(const void* source, uint64_t sourceBytes) {
+    return openBytes(source, sourceBytes, AudioOutputFormat());
+}
+
+bool AudioDecoderClient::openBytes(const void* source, uint64_t sourceBytes,
+                                   const AudioOutputFormat& output) {
+    FILE* snapshot = nullptr;
+    int ownedDescriptor = -1;
+    bool snapshotReady = false;
+
+    reset();
+    cancelled_ = false;
+    error_.clear();
+    if (source == nullptr || sourceBytes == 0u ||
+        sourceBytes > kMediaDecodeMaxSourceBytes ||
+        !audioOutputFormatValid(output)) {
+        error_ = "Invalid media source snapshot";
+        return false;
+    }
+    if (pollCancelled(cancellation_, cancellation_context_, &cancelled_)) {
+        error_ = "メディアデコードがキャンセルされました";
+        return false;
+    }
+
+    snapshot = tmpfile();
+    if (snapshot == nullptr) {
+        error_ = "Could not create private media source snapshot";
+        return false;
+    }
+
+    snapshotReady = writeSourceSnapshot(snapshot, source, sourceBytes,
+                                        cancellation_, cancellation_context_,
+                                        &cancelled_) &&
+                    fflush(snapshot) == 0 && ferror(snapshot) == 0 &&
+                    fseek(snapshot, 0L, SEEK_SET) == 0;
+    if (!snapshotReady) {
+        (void)fclose(snapshot);
+        error_ = cancelled_ ? "メディアデコードがキャンセルされました"
+                            : "Could not copy media source into private snapshot";
+        return false;
+    }
+
+    const int sourceDescriptor = fileno(snapshot);
+    if (sourceDescriptor >= 0)
+        ownedDescriptor = fcntl(sourceDescriptor, F_DUPFD_CLOEXEC, 0);
+    const int closeResult = fclose(snapshot);
+    if (ownedDescriptor < 0 || closeResult != 0) {
+        if (ownedDescriptor >= 0) (void)::close(ownedDescriptor);
+        error_ = "Could not transfer private media source snapshot";
+        return false;
+    }
+
+    /* openDescriptor consumes and closes ownedDescriptor on every path. The
+     * backing tmpfile has already been unlinked, so no path authority or
+     * caller-owned source memory crosses the service boundary. */
+    return openDescriptor(ownedDescriptor, output);
 }
 
 bool AudioDecoderClient::setOutputFormat(const AudioOutputFormat& output) {

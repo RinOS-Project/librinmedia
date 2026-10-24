@@ -13,6 +13,8 @@ constexpr uint32_t kMediaDecodeMagic = UINT32_C(0x3143444d); /* "MDC1" */
 constexpr uint32_t kMediaDecodeVersion = 2u;
 constexpr uint32_t kMediaDecodeMaxTextBytes = 4096u;
 constexpr uint32_t kMediaDecodeMaxFrames = 1024u;
+/* Keep source snapshots aligned with AudioDecoder's bounded descriptor I/O. */
+constexpr uint64_t kMediaDecodeMaxSourceBytes = UINT64_C(1024) * 1024u * 1024u;
 constexpr uint32_t kMediaDecodeSampleFormatS16LE = 1u;
 constexpr const char kMediaDecodeSocketPath[] = "/run/rin/mediad.sock";
 
@@ -121,6 +123,13 @@ public:
      * result and cannot be retained by the application after this call. */
     bool openDescriptor(int descriptor);
     bool openDescriptor(int descriptor, const AudioOutputFormat& output);
+    /* Copies a bounded byte span into an unlinked temporary file, then sends
+     * only its owned descriptor to the authenticated daemon. The source span
+     * is never retained after this synchronous call; configured cancellation
+     * is checked before the copy and between bounded writes. */
+    bool openBytes(const void* source, uint64_t source_bytes);
+    bool openBytes(const void* source, uint64_t source_bytes,
+                   const AudioOutputFormat& output);
     /* The callback is caller-owned and is sampled before each bounded socket
      * wait.  It may be null; cancellation never becomes a protocol success. */
     void setCancellation(RinRuntimeCancellationFunction cancellation,

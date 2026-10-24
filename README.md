@@ -8,6 +8,16 @@ waits use the public `RinRuntime::PollEventLoopBackend` userspace adapter.
 They do not expose the private RinOS wait-set backend or kernel readiness
 producer, and an unavailable media service is still reported as failure.
 
+`AudioDecoderClient::openBytes()` supports a synchronous caller-owned byte
+span without retaining its pointer: it rejects empty or over-1-GiB inputs,
+copies the bytes in bounded 64-KiB writes to an unlinked `tmpfile`, duplicates
+that descriptor with close-on-exec, closes the temporary stream, and transfers
+only the duplicate through the existing authenticated `SCM_RIGHTS` OPEN path.
+Configured cancellation is sampled before the snapshot and between writes.
+The descriptor is consumed on every result. This provides a bounded source
+snapshot for clients that already use `AudioDecoderClient`; it is not yet wired
+to the public SDK `rin_media_open_v1()` kernel object route.
+
 The public `RinMedia::AudioDecoder` descriptor path also bounds FFmpeg codec
 extradata to 1 MiB before `AVCodecContext` admission and rejects malformed
 stream time bases or saturated seek timestamps. AAC/Opus/Vorbis/FLAC decode
