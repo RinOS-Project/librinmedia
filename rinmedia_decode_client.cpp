@@ -397,6 +397,11 @@ bool AudioDecoderClient::openBytes(const void* source, uint64_t sourceBytes,
         error_ = "Invalid media source snapshot";
         return false;
     }
+    const uintptr_t sourceAddress = reinterpret_cast<uintptr_t>(source);
+    if (sourceBytes > static_cast<uint64_t>(UINTPTR_MAX - sourceAddress)) {
+        error_ = "Invalid media source snapshot range";
+        return false;
+    }
     if (pollCancelled(cancellation_, cancellation_context_, &cancelled_)) {
         error_ = "メディアデコードがキャンセルされました";
         return false;
@@ -405,6 +410,13 @@ bool AudioDecoderClient::openBytes(const void* source, uint64_t sourceBytes,
     snapshot = tmpfile();
     if (snapshot == nullptr) {
         error_ = "Could not create private media source snapshot";
+        return false;
+    }
+    const int snapshotDescriptor = fileno(snapshot);
+    if (snapshotDescriptor < 0 ||
+        fcntl(snapshotDescriptor, F_SETFD, FD_CLOEXEC) < 0) {
+        (void)fclose(snapshot);
+        error_ = "Could not protect private media source snapshot";
         return false;
     }
 

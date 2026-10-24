@@ -11,9 +11,11 @@ producer, and an unavailable media service is still reported as failure.
 `AudioDecoderClient::openBytes()` supports a synchronous caller-owned byte
 span without retaining its pointer: it rejects empty or over-1-GiB inputs,
 copies the bytes in bounded 64-KiB writes to an unlinked `tmpfile`, duplicates
-that descriptor with close-on-exec, closes the temporary stream, and transfers
-only the duplicate through the existing authenticated `SCM_RIGHTS` OPEN path.
-Configured cancellation is sampled before the snapshot and between writes.
+the original descriptor with close-on-exec set before copying and duplicates it
+with close-on-exec for transfer, closes the temporary stream, and sends only
+the duplicate through the existing authenticated `SCM_RIGHTS` OPEN path. It
+rejects pointer-range overflow. Configured cancellation is sampled before the
+snapshot and between writes.
 The descriptor is consumed on every result. This provides a bounded source
 snapshot for clients that already use `AudioDecoderClient`; it is not yet wired
 to the public SDK `rin_media_open_v1()` kernel object route.
