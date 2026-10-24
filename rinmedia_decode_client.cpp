@@ -16,6 +16,7 @@ namespace {
 
 constexpr uint32_t kIoIdleLimit = 5u;
 constexpr uint32_t kIoInterruptionLimit = 32u;
+constexpr uint32_t kIoReadinessRaceLimit = 32u;
 constexpr uint32_t kAutostartRetryMs = 25u;
 constexpr uint32_t kAutostartBudgetMs = 500u;
 
@@ -35,6 +36,7 @@ bool transferExact(int fd, void* bytes, uint32_t size, bool receive,
     uint32_t offset = 0u;
     uint32_t idle = 0u;
     uint32_t interrupted = 0u;
+    uint32_t readiness_races = 0u;
     while (offset < size) {
         if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
         const auto wait_status = detail::waitForMediaFd(
@@ -53,10 +55,15 @@ bool transferExact(int fd, void* bytes, uint32_t size, bool receive,
             if (++interrupted >= kIoInterruptionLimit) return false;
             continue;
         }
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (++readiness_races >= kIoReadinessRaceLimit) return false;
+            continue;
+        }
         if (count <= 0 || static_cast<uint32_t>(count) > size - offset) return false;
         offset += static_cast<uint32_t>(count);
         idle = 0u;
         interrupted = 0u;
+        readiness_races = 0u;
     }
     return true;
 }
@@ -153,6 +160,7 @@ bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
     uint32_t offset = 0u;
     uint32_t idle = 0u;
     uint32_t interrupted = 0u;
+    uint32_t readiness_races = 0u;
     while (offset < sizeof(frame)) {
         if (pollCancelled(cancellation, cancellationContext, cancelled)) return false;
         const auto wait = detail::waitForMediaFd(
@@ -174,11 +182,16 @@ bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
             if (++interrupted >= kIoInterruptionLimit) return false;
             continue;
         }
+        if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (++readiness_races >= kIoReadinessRaceLimit) return false;
+            continue;
+        }
         if (count <= 0 || static_cast<size_t>(count) > sizeof(frame) - offset)
             return false;
         offset += static_cast<uint32_t>(count);
         idle = 0u;
         interrupted = 0u;
+        readiness_races = 0u;
         /* SCM_RIGHTS is attached only to the first stream fragment. */
         message.msg_control = nullptr;
         message.msg_controllen = 0u;
