@@ -4,6 +4,7 @@
 #define RIN_MEDIA_DECODE_SERVICE_HPP
 
 #include "rinmedia_audio_decoder.hpp"
+#include <rin/media_types.h>
 
 #include <stdint.h>
 
@@ -13,8 +14,9 @@ constexpr uint32_t kMediaDecodeMagic = UINT32_C(0x3143444d); /* "MDC1" */
 constexpr uint32_t kMediaDecodeVersion = 2u;
 constexpr uint32_t kMediaDecodeMaxTextBytes = 4096u;
 constexpr uint32_t kMediaDecodeMaxFrames = 1024u;
-/* Keep source snapshots aligned with AudioDecoder's bounded descriptor I/O. */
-constexpr uint64_t kMediaDecodeMaxSourceBytes = UINT64_C(1024) * 1024u * 1024u;
+/* Share the public v1 source bound with SDK and kernel validation. */
+constexpr uint64_t kMediaDecodeMaxSourceBytes =
+    RIN_MEDIA_MAX_SOURCE_BYTES_V1;
 constexpr uint32_t kMediaDecodeSampleFormatS16LE = 1u;
 constexpr const char kMediaDecodeSocketPath[] = "/run/rin/mediad.sock";
 
