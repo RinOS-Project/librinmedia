@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #endif
+#include <float.h>
 #include "rinavi.h"
 #include "rinwav.h"
 #include <rinjpeg/rinjpeg.h>
@@ -222,7 +223,7 @@ static inline uint32_t rvid_frame_time_ms(uint32_t frame, float fps)
 {
     double value;
 
-    if (!(fps > 0.0f)) return 0u;
+    if (!(fps > 0.0f) || fps > FLT_MAX) return 0u;
     value = (double)frame * 1000.0 / (double)fps;
     if (!(value > 0.0)) return 0u;
     if (value >= (double)UINT32_MAX) return UINT32_MAX;
@@ -233,7 +234,7 @@ static inline uint32_t rvid_frame_for_time(uint32_t time_ms, float fps)
 {
     double value;
 
-    if (!(fps > 0.0f)) return 0u;
+    if (!(fps > 0.0f) || fps > FLT_MAX) return 0u;
     value = (double)time_ms * (double)fps / 1000.0;
     if (!(value > 0.0)) return 0u;
     if (value >= (double)UINT32_MAX) return UINT32_MAX;
@@ -415,7 +416,8 @@ static inline int rvid_next_frame(RVidPlayer* player, uint32_t* pixels,
     if (ret == RVID_OK) {
         if (player->current_frame != UINT32_MAX)
             player->current_frame++;
-        if (player->video_info.fps > 0) {
+        if (player->video_info.fps > 0 &&
+            player->video_info.fps <= FLT_MAX) {
             player->current_time_ms = rvid_frame_time_ms(
                 player->current_frame, player->video_info.fps);
         }
@@ -427,7 +429,10 @@ static inline int rvid_next_frame(RVidPlayer* player, uint32_t* pixels,
                 player->current_time_ms = 0;
             } else {
                 player->state = RVID_STATE_STOPPED;
-                return RVID_END_OF_FILE;
+                /* The current call successfully produced the final frame.
+                 * Report EOF on the next call, after the caller has had a
+                 * chance to present these pixels. */
+                return RVID_OK;
             }
         }
     }
@@ -472,8 +477,12 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
          player->audio_info.bits_per_sample != 16))
         return RVID_DATA_ERROR;
 
-    size_t output_samples = (size_t)(unsigned)max_samples *
-                            (size_t)(unsigned)player->audio_info.channels;
+    size_t output_samples;
+    if ((size_t)(unsigned)max_samples >
+        SIZE_MAX / (size_t)(unsigned)player->audio_info.channels)
+        return RVID_DATA_ERROR;
+    output_samples = (size_t)(unsigned)max_samples *
+                     (size_t)(unsigned)player->audio_info.channels;
     if (output_samples > SIZE_MAX / sizeof(*output)) return RVID_DATA_ERROR;
     for (size_t i = 0u; i < output_samples; ++i) output[i] = 0;
 
@@ -496,6 +505,8 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
         if (ret != RVID_OK)
             return ret == RVID_END_OF_FILE ? RVID_END_OF_FILE : RVID_ERROR;
 
+        if (chunk_size % (size_t)bytes_per_sample != 0u)
+            return RVID_DATA_ERROR;
         size_t chunk_sample_count = chunk_size / (size_t)bytes_per_sample;
         if (chunk_sample_count > (size_t)UINT32_MAX)
             return RVID_DATA_ERROR;
@@ -524,7 +535,7 @@ static inline int rvid_get_audio_for_time(RVidPlayer* player, uint32_t time_ms,
                 }
             } else if (player->audio_info.bits_per_sample == 8) {
                 for (size_t i = 0; i < output_count; i++) {
-                    output[i] = ((int16_t)src[i] - 128) << 8;
+                    output[i] = (int16_t)(((int16_t)src[i] - 128) * 256);
                 }
             }
 
@@ -582,7 +593,8 @@ static inline int rvid_seek_frame(RVidPlayer* player, uint32_t frame_num) {
                     player->video_info.total_frames - 1 : 0;
     }
     player->current_frame = frame_num;
-    if (player->video_info.fps > 0) {
+    if (player->video_info.fps > 0 &&
+        player->video_info.fps <= FLT_MAX) {
         player->current_time_ms = rvid_frame_time_ms(
             frame_num, player->video_info.fps);
     }
@@ -593,7 +605,8 @@ static inline int rvid_seek_frame(RVidPlayer* player, uint32_t frame_num) {
  * シーク (時間 ミリ秒)
  */
 static inline int rvid_seek_ms(RVidPlayer* player, uint32_t time_ms) {
-    if (!player || player->video_info.fps <= 0) return RVID_ERROR;
+    if (!player || player->video_info.fps <= 0 ||
+        player->video_info.fps > FLT_MAX) return RVID_ERROR;
     uint32_t frame = rvid_frame_for_time(time_ms, player->video_info.fps);
     return rvid_seek_frame(player, frame);
 }
@@ -642,7 +655,8 @@ static inline int rvid_is_finished(RVidPlayer* player) {
 static inline int rvid_update(RVidPlayer* player, uint32_t elapsed_ms) {
     if (!player || player->state != RVID_STATE_PLAYING ||
         player->video_info.total_frames == 0u ||
-        !(player->video_info.fps > 0.0f)) return 0;
+        !(player->video_info.fps > 0.0f) ||
+        player->video_info.fps > FLT_MAX) return 0;
 
     if (elapsed_ms > UINT32_MAX - player->current_time_ms)
         player->current_time_ms = UINT32_MAX;
@@ -650,10 +664,11 @@ static inline int rvid_update(RVidPlayer* player, uint32_t elapsed_ms) {
         player->current_time_ms += elapsed_ms;
 
     /* 目標フレームを計算 */
-    const float target_frame_value = (float)player->current_time_ms *
-                                     player->video_info.fps / 1000.0f;
+    const double target_frame_value =
+        (double)player->current_time_ms *
+        (double)player->video_info.fps / 1000.0;
     uint32_t target_frame = target_frame_value >=
-                                    (float)player->video_info.total_frames ?
+                                    (double)player->video_info.total_frames ?
                                 player->video_info.total_frames :
                                 (uint32_t)target_frame_value;
 
