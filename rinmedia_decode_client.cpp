@@ -337,7 +337,8 @@ bool AudioDecoderClient::openDescriptor(int descriptor,
     (void)::close(descriptor);
     if (!transferExact(fd, &reply, sizeof(reply), true, cancellation_,
                        cancellation_context_, &cancelled_) ||
-        !validReply(reply, MediaDecodeOperation::Open, request.request_id, 0u) ||
+        !validReply(reply, MediaDecodeOperation::Open, request.request_id,
+                    reply.session_id) ||
         reply.status != 0 || reply.session_id == 0u ||
         reply.payload_bytes != sizeof(metadata) ||
         !transferExact(fd, &metadata, sizeof(metadata), true, cancellation_,
