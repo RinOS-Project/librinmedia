@@ -491,6 +491,7 @@ bool AudioDecoderClient::openMediaRequestV1(
         return false;
     }
     if (snapshot.flags != 0u ||
+        snapshot.mime_type.size > RIN_MEDIA_MAX_MIME_TYPE_BYTES_V1 ||
         !mediaRequestRangeValid(snapshot.mime_type.address,
                                 snapshot.mime_type.size, UINT64_MAX) ||
         !mediaRequestRangeValid(snapshot.source.address,
