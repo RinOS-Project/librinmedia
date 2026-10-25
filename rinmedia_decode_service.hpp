@@ -4,6 +4,7 @@
 #define RIN_MEDIA_DECODE_SERVICE_HPP
 
 #include "rinmedia_audio_decoder.hpp"
+#include <rin/media.h>
 #include <rin/media_types.h>
 
 #include <stdint.h>
@@ -132,6 +133,12 @@ public:
     bool openBytes(const void* source, uint64_t source_bytes);
     bool openBytes(const void* source, uint64_t source_bytes,
                    const AudioOutputFormat& output);
+    /* Validates the public v1 audio request and snapshots only its bounded
+     * caller-owned source slice before authenticated descriptor transfer.
+     * Image/video requests remain outside this audio client. */
+    bool openMediaRequestV1(const RinMediaOpenV1* request);
+    bool openMediaRequestV1(const RinMediaOpenV1* request,
+                            const AudioOutputFormat& output);
     /* The callback is caller-owned and is sampled before each bounded socket
      * wait.  It may be null; cancellation never becomes a protocol success. */
     void setCancellation(RinRuntimeCancellationFunction cancellation,

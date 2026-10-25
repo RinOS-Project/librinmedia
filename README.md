@@ -20,6 +20,14 @@ The descriptor is consumed on every result. This provides a bounded source
 snapshot for clients that already use `AudioDecoderClient`; it is not yet wired
 to the public SDK `rin_media_open_v1()` kernel object route.
 
+`AudioDecoderClient::openMediaRequestV1()` accepts a copied public
+`RinMediaOpenV1` record for `RIN_MEDIA_TYPE_AUDIO`, validates its version,
+reserved fields, MIME/source ranges, flags, and the shared 1 GiB source bound,
+then passes only the source bytes through `openBytes()`. IMAGE and VIDEO are
+rejected by this audio-only adapter. The current MDC1 OPEN protocol has no MIME
+payload, so the MIME bytes are range-checked but not forwarded; this adapter
+does not connect `rin_media_open_v1()` to a kernel `RinMediaObject`.
+
 The public `RinMedia::AudioDecoder` descriptor path also bounds FFmpeg codec
 extradata to 1 MiB before `AVCodecContext` admission and rejects malformed
 stream time bases or saturated seek timestamps. AAC/Opus/Vorbis/FLAC decode

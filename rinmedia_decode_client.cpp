@@ -23,6 +23,14 @@ constexpr uint32_t kAutostartRetryMs = 25u;
 constexpr uint32_t kAutostartBudgetMs = 500u;
 constexpr size_t kSourceSnapshotChunkBytes = 64u * 1024u;
 
+bool mediaRequestRangeValid(uint64_t address, uint64_t size,
+                            uint64_t maximumSize) {
+    if (address == 0u || size == 0u || size > maximumSize ||
+        address > static_cast<uint64_t>(UINTPTR_MAX))
+        return false;
+    return size <= static_cast<uint64_t>(UINTPTR_MAX) - address;
+}
+
 extern "C" void rin_sleep(unsigned int milliseconds);
 
 bool pollCancelled(RinRuntimeCancellationFunction cancellation,
@@ -446,6 +454,55 @@ bool AudioDecoderClient::openBytes(const void* source, uint64_t sourceBytes,
      * backing tmpfile has already been unlinked, so no path authority or
      * caller-owned source memory crosses the service boundary. */
     return openDescriptor(ownedDescriptor, output);
+}
+
+bool AudioDecoderClient::openMediaRequestV1(
+    const RinMediaOpenV1* request) {
+    return openMediaRequestV1(request, AudioOutputFormat());
+}
+
+bool AudioDecoderClient::openMediaRequestV1(
+    const RinMediaOpenV1* request, const AudioOutputFormat& output) {
+    RinMediaOpenV1 snapshot = {};
+
+    reset();
+    cancelled_ = false;
+    error_.clear();
+    if (!request) {
+        error_ = "Invalid RinMediaOpenV1 request";
+        return false;
+    }
+    memcpy(&snapshot, request, sizeof(snapshot));
+    if (snapshot.struct_size < sizeof(snapshot) ||
+        snapshot.version != RIN_SDK_STRUCT_VERSION_1) {
+        error_ = "RinMediaOpenV1 ABI mismatch";
+        return false;
+    }
+    if (snapshot.media_type != RIN_MEDIA_TYPE_AUDIO) {
+        error_ = (snapshot.media_type == RIN_MEDIA_TYPE_IMAGE ||
+                  snapshot.media_type == RIN_MEDIA_TYPE_VIDEO)
+                     ? "This decoder client accepts audio requests only"
+                     : "Invalid RinMediaOpenV1 media type";
+        return false;
+    }
+    if (snapshot.flags != 0u ||
+        !mediaRequestRangeValid(snapshot.mime_type.address,
+                                snapshot.mime_type.size, UINT64_MAX) ||
+        !mediaRequestRangeValid(snapshot.source.address,
+                                snapshot.source.size,
+                                kMediaDecodeMaxSourceBytes) ||
+        snapshot.reserved[0] != 0u || snapshot.reserved[1] != 0u ||
+        snapshot.reserved[2] != 0u || snapshot.reserved[3] != 0u) {
+        error_ = "Invalid RinMediaOpenV1 request fields";
+        return false;
+    }
+
+    /* MIME bytes remain advisory at this service boundary: MDC1 currently
+     * authenticates the source descriptor and the decoder probes its content.
+     * Do not reinterpret the MIME span as source authority. */
+    return openBytes(reinterpret_cast<const void*>(
+                         static_cast<uintptr_t>(snapshot.source.address)),
+                     snapshot.source.size, output);
 }
 
 bool AudioDecoderClient::setOutputFormat(const AudioOutputFormat& output) {
