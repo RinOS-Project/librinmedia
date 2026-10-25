@@ -442,7 +442,7 @@ struct FfmpegVideoDecoder::Impl {
                 scaler = sws_getCachedContext(
                     scaler, frame->width, frame->height,
                     static_cast<AVPixelFormat>(frame->format), frame->width,
-                    frame->height, AV_PIX_FMT_ARGB, SWS_BILINEAR, nullptr,
+                    frame->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, nullptr,
                     nullptr, nullptr);
                 if (!scaler) {
                     av_frame_unref(frame);
