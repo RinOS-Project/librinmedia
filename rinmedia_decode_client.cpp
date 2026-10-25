@@ -463,6 +463,10 @@ bool AudioDecoderClient::openMediaRequestV1(
 
 bool AudioDecoderClient::openMediaRequestV1(
     const RinMediaOpenV1* request, const AudioOutputFormat& output) {
+    struct RequestHeader {
+        uint32_t struct_size;
+        uint32_t version;
+    } header = {};
     RinMediaOpenV1 snapshot = {};
 
     reset();
@@ -472,12 +476,13 @@ bool AudioDecoderClient::openMediaRequestV1(
         error_ = "Invalid RinMediaOpenV1 request";
         return false;
     }
-    memcpy(&snapshot, request, sizeof(snapshot));
-    if (snapshot.struct_size < sizeof(snapshot) ||
-        snapshot.version != RIN_SDK_STRUCT_VERSION_1) {
+    memcpy(&header, request, sizeof(header));
+    if (header.struct_size < sizeof(snapshot) ||
+        header.version != RIN_SDK_STRUCT_VERSION_1) {
         error_ = "RinMediaOpenV1 ABI mismatch";
         return false;
     }
+    memcpy(&snapshot, request, sizeof(snapshot));
     if (snapshot.media_type != RIN_MEDIA_TYPE_AUDIO) {
         error_ = (snapshot.media_type == RIN_MEDIA_TYPE_IMAGE ||
                   snapshot.media_type == RIN_MEDIA_TYPE_VIDEO)
