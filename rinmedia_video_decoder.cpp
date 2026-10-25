@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: MIT */
-/* Bounded AVI frame decoding for authenticated mediad sessions. */
+/* Bounded AVI/FFmpeg video frame decoding for authenticated mediad sessions. */
 #include "rinmedia_video_decoder.hpp"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -46,6 +47,7 @@ bool frameTimestamp(uint64_t frame_index, uint32_t scale, uint32_t rate,
 VideoDecoder::~VideoDecoder() { close(); }
 
 void VideoDecoder::close() {
+    ffmpeg_.close();
     rvid_close(&player_);
     free(frame_pixels_);
     free(source_);
@@ -56,6 +58,15 @@ void VideoDecoder::close() {
     memset(&player_, 0, sizeof(player_));
     memset(&info_, 0, sizeof(info_));
     open_ = false;
+    using_ffmpeg_ = false;
+}
+
+bool VideoDecoder::openFfmpegDescriptor(int descriptor) {
+    if (!ffmpeg_.openDescriptor(descriptor)) return false;
+    info_ = ffmpeg_.info();
+    using_ffmpeg_ = true;
+    open_ = true;
+    return true;
 }
 
 bool VideoDecoder::openDescriptor(int descriptor) {
@@ -69,9 +80,18 @@ bool VideoDecoder::openDescriptor(int descriptor) {
     uint64_t pixel_count;
     uint64_t frame_bytes;
     RAviStream* stream;
+    uint8_t signature[12] = {};
+    ssize_t signature_bytes;
+    int fallback_descriptor = -1;
 
     close();
     if (descriptor < 0) return false;
+    signature_bytes = pread(descriptor, signature, sizeof(signature), 0);
+    const bool is_avi = signature_bytes == (ssize_t)sizeof(signature) &&
+        memcmp(signature, "RIFF", 4u) == 0 &&
+        memcmp(signature + 8u, "AVI ", 4u) == 0;
+    if (!is_avi) return openFfmpegDescriptor(descriptor);
+
     if (fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
         status.st_size <= 0 ||
         (uint64_t)status.st_size > RIN_MEDIA_MAX_VIDEO_SOURCE_BYTES_V1 ||
@@ -79,12 +99,26 @@ bool VideoDecoder::openDescriptor(int descriptor) {
         (void)closeOwnedDescriptor(descriptor);
         return false;
     }
+    fallback_descriptor = dup(descriptor);
+    if (fallback_descriptor >= 0) {
+        const int descriptor_flags = fcntl(fallback_descriptor, F_GETFD, 0);
+        if (descriptor_flags < 0 ||
+            fcntl(fallback_descriptor, F_SETFD,
+                  descriptor_flags | FD_CLOEXEC) != 0) {
+            (void)closeOwnedDescriptor(fallback_descriptor);
+            fallback_descriptor = -1;
+        }
+    }
     source_bytes_ = (size_t)status.st_size;
     source_ = (uint8_t*)malloc(source_bytes_);
     if (source_ == nullptr) {
         source_bytes_ = 0u;
-        (void)closeOwnedDescriptor(descriptor);
-        return false;
+        if (!closeOwnedDescriptor(descriptor)) {
+            (void)closeOwnedDescriptor(fallback_descriptor);
+            return false;
+        }
+        return fallback_descriptor >= 0 &&
+               openFfmpegDescriptor(fallback_descriptor);
     }
     while (offset < source_bytes_) {
         const size_t remaining = source_bytes_ - offset;
@@ -94,19 +128,30 @@ bool VideoDecoder::openDescriptor(int descriptor) {
                                     (off_t)offset);
         if (count < 0 && errno == EINTR) {
             if (++interrupted < 32u) continue;
-            (void)closeOwnedDescriptor(descriptor);
+            const bool original_closed = closeOwnedDescriptor(descriptor);
             close();
-            return false;
+            if (!original_closed) {
+                (void)closeOwnedDescriptor(fallback_descriptor);
+                return false;
+            }
+            return fallback_descriptor >= 0 &&
+                   openFfmpegDescriptor(fallback_descriptor);
         }
         if (count <= 0 || (size_t)count > chunk) {
-            (void)closeOwnedDescriptor(descriptor);
+            const bool original_closed = closeOwnedDescriptor(descriptor);
             close();
-            return false;
+            if (!original_closed) {
+                (void)closeOwnedDescriptor(fallback_descriptor);
+                return false;
+            }
+            return fallback_descriptor >= 0 &&
+                   openFfmpegDescriptor(fallback_descriptor);
         }
         offset += (size_t)count;
         interrupted = 0u;
     }
     if (!closeOwnedDescriptor(descriptor)) {
+        (void)closeOwnedDescriptor(fallback_descriptor);
         close();
         return false;
     }
@@ -117,7 +162,8 @@ bool VideoDecoder::openDescriptor(int descriptor) {
         player_.video_info.width <= 0 || player_.video_info.height <= 0 ||
         player_.video_info.total_frames == 0u) {
         close();
-        return false;
+        return fallback_descriptor >= 0 &&
+               openFfmpegDescriptor(fallback_descriptor);
     }
     stream = &player_.avi.streams[player_.avi.video_stream];
     width = (uint32_t)player_.video_info.width;
@@ -128,22 +174,30 @@ bool VideoDecoder::openDescriptor(int descriptor) {
         fps_numerator == 0u || fps_denominator == 0u ||
         (uint64_t)fps_numerator > (uint64_t)fps_denominator * 1000u) {
         close();
-        return false;
+        return fallback_descriptor >= 0 &&
+               openFfmpegDescriptor(fallback_descriptor);
     }
     pixel_count = (uint64_t)width * height;
     if (pixel_count == 0u || pixel_count > kVideoMaximumPixels ||
         pixel_count > SIZE_MAX / sizeof(uint32_t)) {
         close();
-        return false;
+        return fallback_descriptor >= 0 &&
+               openFfmpegDescriptor(fallback_descriptor);
     }
     frame_bytes = pixel_count * sizeof(uint32_t);
     if (frame_bytes > kVideoMaximumFrameBytes || frame_bytes > SIZE_MAX) {
         close();
-        return false;
+        return fallback_descriptor >= 0 &&
+               openFfmpegDescriptor(fallback_descriptor);
     }
     frame_capacity_pixels_ = (size_t)pixel_count;
     frame_pixels_ = (uint32_t*)malloc((size_t)frame_bytes);
     if (frame_pixels_ == nullptr) {
+        close();
+        return fallback_descriptor >= 0 &&
+               openFfmpegDescriptor(fallback_descriptor);
+    }
+    if (!closeOwnedDescriptor(fallback_descriptor)) {
         close();
         return false;
     }
@@ -155,7 +209,9 @@ bool VideoDecoder::openDescriptor(int descriptor) {
     info_.format = RIN_IMAGE_DECODE_FORMAT_ARGB8888;
     info_.row_stride_bytes = width * 4u;
     info_.frame_count = player_.video_info.total_frames;
-    info_.flags = RIN_VIDEO_INFO_FRAME_COUNT_KNOWN;
+    info_.flags = RIN_VIDEO_INFO_FRAME_COUNT_KNOWN |
+                  RIN_VIDEO_INFO_FPS_KNOWN |
+                  RIN_VIDEO_INFO_DURATION_KNOWN;
     info_.duration_ns = (uint64_t)player_.video_info.duration_ms *
                         UINT64_C(1000000);
     info_.fps_numerator = fps_numerator;
@@ -170,6 +226,11 @@ bool VideoDecoder::decodeNextFrame(uint32_t max_width, uint32_t max_height,
                                    const uint8_t** output_out,
                                    RJpegCancellationFunction cancellation,
                                    void* cancellation_context) {
+    if (using_ffmpeg_) {
+        return ffmpeg_.decodeNextFrame(
+            max_width, max_height, max_frame_bytes, info_out, output_out,
+            cancellation, cancellation_context);
+    }
     RinVideoFrameInfoV1 info = {};
     const uint32_t frame_index = player_.current_frame;
     const uint64_t expected_bytes = (uint64_t)info_.row_stride_bytes *
@@ -193,7 +254,8 @@ bool VideoDecoder::decodeNextFrame(uint32_t max_width, uint32_t max_height,
         (int)info_.width, (int)info_.height, cancellation,
         cancellation_context);
     if (decoded == RVID_END_OF_FILE) {
-        info.flags = RIN_VIDEO_FRAME_FLAG_END_OF_STREAM;
+        info.flags = RIN_VIDEO_FRAME_FLAG_END_OF_STREAM |
+                     RIN_VIDEO_FRAME_FLAG_TIMESTAMP_KNOWN;
         info.timestamp_ns = info_.duration_ns;
         info.payload_size_bytes = 0u;
         *info_out = info;
@@ -203,6 +265,7 @@ bool VideoDecoder::decodeNextFrame(uint32_t max_width, uint32_t max_height,
         !frameTimestamp(frame_index, info_.fps_denominator,
                         info_.fps_numerator, &info.timestamp_ns))
         return false;
+    info.flags |= RIN_VIDEO_FRAME_FLAG_TIMESTAMP_KNOWN;
     *output_out = (const uint8_t*)frame_pixels_;
     info.payload_size_bytes = expected_bytes;
     *info_out = info;

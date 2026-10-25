@@ -34,6 +34,16 @@ stream time bases or saturated seek timestamps. AAC/Opus/Vorbis/FLAC decode
 still uses the configured FFmpeg profile; this boundary does not grant a
 caller filesystem, media-service, keyring, or hardware authority.
 
+The authenticated `mediad` VIDEO owner retains the bounded AVI MJPEG/RAW path
+and adds a custom-AVIO FFmpeg fallback for its configured AVI,
+Matroska/WebM, MOV/MP4, and MPEG-TS demuxers. It admits the configured H.264,
+HEVC, AV1, VP8, VP9, Theora, and MJPEG decoders with one codec thread and uses
+`libswscale` to produce packed ARGB8888 frames. Source, stream, probe, index,
+packet, extradata, dimensions, pixels, and frame bytes are bounded. Cancellation
+is checked around FFmpeg input/decode stages but cannot interrupt a CPU codec
+call in progress; broad format compatibility and product acceptance are not
+claimed.
+
 The same admission path rejects an invalid selected stream index or codec
 sample-rate/channel shape before allocating and populating `AVCodecContext`.
 The descriptor I/O adapter also rejects `AVSEEK_SIZE` and ordinary seek

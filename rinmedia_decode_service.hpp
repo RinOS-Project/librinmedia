@@ -12,7 +12,7 @@
 namespace RinMedia {
 
 constexpr uint32_t kMediaDecodeMagic = UINT32_C(0x3143444d); /* "MDC1" */
-constexpr uint32_t kMediaDecodeVersion = 3u;
+constexpr uint32_t kMediaDecodeVersion = 4u;
 constexpr uint32_t kMediaDecodeMaxTextBytes = 4096u;
 constexpr uint32_t kMediaDecodeMaxFrames = 1024u;
 /* Share the public v1 source bound with SDK and kernel validation. */
@@ -48,8 +48,9 @@ struct MediaDecodeHeaderV1 {
     uint64_t session_id;
 };
 
-/* Version 3 keeps the 16-byte OPEN payload and adds an explicit media type.
- * Audio peers request S16LE; VIDEO peers request bounded ARGB8888 frames. */
+/* Version 4 keeps the 16-byte OPEN payload and adds an explicit media type.
+ * Audio peers request S16LE; VIDEO peers request bounded ARGB8888 frames.
+ * VIDEO OPEN reply flags describe which count/timing values are known. */
 struct MediaDecodeOutputFormatV3 {
     uint32_t sample_rate;
     uint32_t channels;
@@ -66,7 +67,7 @@ struct MediaDecodeVideoOpenReplyV1 {
     uint32_t frame_count;
     uint32_t fps_numerator;
     uint32_t fps_denominator;
-    uint32_t reserved0;
+    uint32_t flags;
     uint64_t duration_ns;
     uint64_t reserved[2];
 };

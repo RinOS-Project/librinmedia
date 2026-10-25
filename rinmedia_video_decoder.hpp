@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT */
-/* Bounded AVI frame decoder used by the authenticated mediad service. */
+/* Bounded video frame decoder used by the authenticated mediad service. */
 #ifndef RIN_MEDIA_VIDEO_DECODER_HPP
 #define RIN_MEDIA_VIDEO_DECODER_HPP
 
@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "rinvideo.h"
+#include "rinmedia_ffmpeg_video_decoder.hpp"
 
 namespace RinMedia {
 
@@ -18,7 +19,9 @@ class VideoDecoder final {
     uint32_t* frame_pixels_ = nullptr;
     size_t frame_capacity_pixels_ = 0u;
     RinVideoInfoV1 info_{};
+    FfmpegVideoDecoder ffmpeg_;
     bool open_ = false;
+    bool using_ffmpeg_ = false;
 
 public:
     VideoDecoder() = default;
@@ -41,6 +44,9 @@ public:
                          const uint8_t** output_out,
                          RJpegCancellationFunction cancellation,
                          void* cancellation_context);
+
+private:
+    bool openFfmpegDescriptor(int descriptor);
 };
 
 } // namespace RinMedia
