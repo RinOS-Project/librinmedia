@@ -32,12 +32,13 @@ public:
     bool isOpen() const { return open_; }
     const RinVideoInfoV1& info() const { return info_; }
 
-    /* Decodes one bounded ARGB8888 frame into output. A successful EOS call
-     * returns metadata with END_OF_STREAM and no pixel payload. */
+    /* Decodes one bounded ARGB8888 frame and returns a pointer to decoder-
+     * owned pixels, valid until the next decode or close. A successful EOS
+     * call returns metadata with END_OF_STREAM and a null pixel pointer. */
     bool decodeNextFrame(uint32_t max_width, uint32_t max_height,
                          uint32_t max_frame_bytes,
-                         RinVideoFrameInfoV1* info_out, uint8_t* output,
-                         size_t output_capacity);
+                         RinVideoFrameInfoV1* info_out,
+                         const uint8_t** output_out);
 };
 
 } // namespace RinMedia

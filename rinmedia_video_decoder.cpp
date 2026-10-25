@@ -167,16 +167,15 @@ bool VideoDecoder::openDescriptor(int descriptor) {
 bool VideoDecoder::decodeNextFrame(uint32_t max_width, uint32_t max_height,
                                    uint32_t max_frame_bytes,
                                    RinVideoFrameInfoV1* info_out,
-                                   uint8_t* output,
-                                   size_t output_capacity) {
+                                   const uint8_t** output_out) {
     RinVideoFrameInfoV1 info = {};
     const uint32_t frame_index = player_.current_frame;
     const uint64_t expected_bytes = (uint64_t)info_.row_stride_bytes *
                                     info_.height;
-    if (!open_ || !info_out || max_width < info_.width ||
+    if (output_out != nullptr) *output_out = nullptr;
+    if (!open_ || !info_out || !output_out || max_width < info_.width ||
         max_height < info_.height || expected_bytes > max_frame_bytes ||
-        expected_bytes > output_capacity ||
-        (expected_bytes != 0u && output == nullptr))
+        expected_bytes > SIZE_MAX)
         return false;
 
     info.struct_size = sizeof(info);
@@ -201,7 +200,7 @@ bool VideoDecoder::decodeNextFrame(uint32_t max_width, uint32_t max_height,
         !frameTimestamp(frame_index, info_.fps_denominator,
                         info_.fps_numerator, &info.timestamp_ns))
         return false;
-    memcpy(output, frame_pixels_, (size_t)expected_bytes);
+    *output_out = (const uint8_t*)frame_pixels_;
     info.payload_size_bytes = expected_bytes;
     *info_out = info;
     return true;
