@@ -182,7 +182,7 @@ static inline int rvid_decode_raw_frame_cancellable(
 
     /* ボトムアップBMP形式 */
     for (int y = 0; y < height; y++) {
-        if (cancellation != NULL && cancellation(cancellation_context) != 0)
+        if (cancellation != 0 && cancellation(cancellation_context) != 0)
             return RVID_CANCELLED;
         const uint8_t* src =
             data + (size_t)(unsigned)(height - 1 - y) * stride;
