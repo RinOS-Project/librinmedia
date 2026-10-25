@@ -24,8 +24,11 @@
 #define RAVI_DATA_ERROR     -2
 #define RAVI_UNSUPPORTED    -3
 #define RAVI_END_OF_FILE    -4
+#define RAVI_CANCELLED      -5
 
 #define RAVI_MAX_STREAMS    16
+
+typedef int (*RAviCancellationFunction)(void* context);
 
 /* FourCC マクロ */
 #define RAVI_FOURCC(a, b, c, d) \
@@ -615,8 +618,9 @@ static inline int ravi_frame_payload(const RAviContext* ctx,
 /*
  * インデックスを使ってフレームを取得
  */
-static inline int ravi_get_frame_by_index(RAviContext* ctx, uint32_t frame_num,
-                                           RAviFrame* frame) {
+static inline int ravi_get_frame_by_index_cancellable(
+    RAviContext* ctx, uint32_t frame_num, RAviFrame* frame,
+    RAviCancellationFunction cancellation, void* cancellation_context) {
     const uint8_t* index_data = 0;
     ravi_clear_frame(frame);
     if (!ctx || !frame || ctx->idx1_offset == 0 ||
@@ -624,6 +628,9 @@ static inline int ravi_get_frame_by_index(RAviContext* ctx, uint32_t frame_num,
     uint32_t video_frame = 0;
 
     for (size_t i = 0; i < ctx->idx1_count; i++) {
+        if ((i & 255u) == 0u && cancellation != 0 &&
+            cancellation(cancellation_context) != 0)
+            return RAVI_CANCELLED;
         const uint8_t* entry = index_data + i * sizeof(RAviIndexEntry);
         uint32_t chunk_id = ravi_load32(entry + 0u);
         uint32_t flags = ravi_load32(entry + 4u);
@@ -647,6 +654,12 @@ static inline int ravi_get_frame_by_index(RAviContext* ctx, uint32_t frame_num,
     }
 
     return RAVI_END_OF_FILE;
+}
+
+static inline int ravi_get_frame_by_index(RAviContext* ctx,
+                                           uint32_t frame_num,
+                                           RAviFrame* frame) {
+    return ravi_get_frame_by_index_cancellable(ctx, frame_num, frame, 0, 0);
 }
 
 /*
