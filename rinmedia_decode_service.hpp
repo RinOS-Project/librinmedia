@@ -12,13 +12,14 @@
 namespace RinMedia {
 
 constexpr uint32_t kMediaDecodeMagic = UINT32_C(0x3143444d); /* "MDC1" */
-constexpr uint32_t kMediaDecodeVersion = 2u;
+constexpr uint32_t kMediaDecodeVersion = 3u;
 constexpr uint32_t kMediaDecodeMaxTextBytes = 4096u;
 constexpr uint32_t kMediaDecodeMaxFrames = 1024u;
 /* Share the public v1 source bound with SDK and kernel validation. */
 constexpr uint64_t kMediaDecodeMaxSourceBytes =
     RIN_MEDIA_MAX_SOURCE_BYTES_V1;
 constexpr uint32_t kMediaDecodeSampleFormatS16LE = 1u;
+constexpr uint32_t kMediaDecodeVideoPixelFormatARGB8888 = 2u;
 constexpr const char kMediaDecodeSocketPath[] = "/run/rin/mediad.sock";
 
 enum class MediaDecodeOperation : uint16_t {
@@ -27,6 +28,7 @@ enum class MediaDecodeOperation : uint16_t {
     Seek = 3u,
     Close = 4u,
     ConfigureOutput = 5u,
+    VideoFrame = 6u,
 };
 
 /* The request uses status == 0.  Responses echo operation/request_id and use
@@ -46,13 +48,33 @@ struct MediaDecodeHeaderV1 {
     uint64_t session_id;
 };
 
-/* Version 2 puts an explicit, bounded PCM output request on both Open and
- * ConfigureOutput.  The fixed header layout is unchanged, so a v1 peer is
- * rejected by the header-version check before descriptor ownership transfers. */
-struct MediaDecodeOutputFormatV2 {
+/* Version 3 keeps the 16-byte OPEN payload and adds an explicit media type.
+ * Audio peers request S16LE; VIDEO peers request bounded ARGB8888 frames. */
+struct MediaDecodeOutputFormatV3 {
     uint32_t sample_rate;
     uint32_t channels;
     uint32_t sample_format;
+    uint32_t media_type;
+};
+
+struct MediaDecodeVideoOpenReplyV1 {
+    uint64_t session_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_stride_bytes;
+    uint32_t format;
+    uint32_t frame_count;
+    uint32_t fps_numerator;
+    uint32_t fps_denominator;
+    uint32_t reserved0;
+    uint64_t duration_ns;
+    uint64_t reserved[2];
+};
+
+struct MediaDecodeVideoFrameRequestV1 {
+    uint32_t max_width;
+    uint32_t max_height;
+    uint32_t max_frame_bytes;
     uint32_t reserved0;
 };
 
@@ -88,7 +110,7 @@ struct MediaDecodeSeekRequestV1 {
 
 static_assert(sizeof(MediaDecodeHeaderV1) == 32u,
               "media decode header ABI drift");
-static_assert(sizeof(MediaDecodeOutputFormatV2) == 16u,
+static_assert(sizeof(MediaDecodeOutputFormatV3) == 16u,
               "media decode output format ABI drift");
 static_assert(sizeof(MediaDecodeOpenReplyV2) == 12336u,
               "media decode open reply ABI drift");
@@ -98,6 +120,10 @@ static_assert(sizeof(MediaDecodeReadReplyV1) == 8u,
               "media decode read reply ABI drift");
 static_assert(sizeof(MediaDecodeSeekRequestV1) == 8u,
               "media decode seek request ABI drift");
+static_assert(sizeof(MediaDecodeVideoOpenReplyV1) == 64u,
+              "media decode video open reply ABI drift");
+static_assert(sizeof(MediaDecodeVideoFrameRequestV1) == 16u,
+              "media decode video frame request ABI drift");
 
 class AudioDecoderClient final {
     int socket_fd_ = -1;

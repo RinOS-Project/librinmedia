@@ -145,7 +145,7 @@ void clearReadOutput(Sample* destination, int maximumFrames,
 }
 
 bool sendOpenWithDescriptor(int fd, const MediaDecodeHeaderV1& request,
-                            const MediaDecodeOutputFormatV2& output,
+                            const MediaDecodeOutputFormatV3& output,
                             int descriptor,
                             RinRuntimeCancellationFunction cancellation,
                             void* cancellationContext, bool* cancelled) {
@@ -229,11 +229,12 @@ bool writeSourceSnapshot(FILE* stream, const void* source,
     return ferror(stream) == 0;
 }
 
-MediaDecodeOutputFormatV2 wireOutput(const AudioOutputFormat& output) {
-    MediaDecodeOutputFormatV2 wire = {};
+MediaDecodeOutputFormatV3 wireOutput(const AudioOutputFormat& output) {
+    MediaDecodeOutputFormatV3 wire = {};
     wire.sample_rate = output.sampleRate;
     wire.channels = output.channels;
     wire.sample_format = kMediaDecodeSampleFormatS16LE;
+    wire.media_type = RIN_MEDIA_TYPE_AUDIO;
     return wire;
 }
 
@@ -324,8 +325,8 @@ bool AudioDecoderClient::openDescriptor(int descriptor,
     request.version = kMediaDecodeVersion;
     request.operation = static_cast<uint16_t>(MediaDecodeOperation::Open);
     request.request_id = 1u;
-    request.payload_bytes = sizeof(MediaDecodeOutputFormatV2);
-    const MediaDecodeOutputFormatV2 requested = wireOutput(output);
+    request.payload_bytes = sizeof(MediaDecodeOutputFormatV3);
+    const MediaDecodeOutputFormatV3 requested = wireOutput(output);
     if (!sendOpenWithDescriptor(fd, request, requested, descriptor, cancellation_,
                                 cancellation_context_, &cancelled_)) {
         (void)::close(descriptor);
@@ -523,7 +524,7 @@ bool AudioDecoderClient::setOutputFormat(const AudioOutputFormat& output) {
     if (output.sampleRate == output_format_.sampleRate &&
         output.channels == output_format_.channels)
         return true;
-    const MediaDecodeOutputFormatV2 request = wireOutput(output);
+    const MediaDecodeOutputFormatV3 request = wireOutput(output);
     if (!call(MediaDecodeOperation::ConfigureOutput, &request, sizeof(request), &reply)) {
         if (error_.empty()) error_ = "Media decode output configuration failed";
         reset();
