@@ -38,7 +38,9 @@ public:
     bool decodeNextFrame(uint32_t max_width, uint32_t max_height,
                          uint32_t max_frame_bytes,
                          RinVideoFrameInfoV1* info_out,
-                         const uint8_t** output_out);
+                         const uint8_t** output_out,
+                         RJpegCancellationFunction cancellation,
+                         void* cancellation_context);
 };
 
 } // namespace RinMedia

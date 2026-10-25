@@ -28,6 +28,7 @@
 #define RVID_DATA_ERROR     -2
 #define RVID_UNSUPPORTED    -3
 #define RVID_END_OF_FILE    -4
+#define RVID_CANCELLED      -5
 
 /* 再生状態 */
 #define RVID_STATE_STOPPED   0
@@ -138,19 +139,28 @@ static inline int rvid_detect_codec(uint32_t fourcc) {
     }
 }
 
+static inline int rvid_decode_mjpeg_frame_cancellable(
+    const uint8_t* data, size_t size, uint32_t* pixels,
+    size_t pixel_capacity, int max_width, int max_height,
+    RJpegCancellationFunction cancellation, void* cancellation_context) {
+    return rjpeg_decode_cancellable(data, size, pixels, pixel_capacity,
+                                    max_width, max_height, cancellation,
+                                    cancellation_context);
+}
+
 static inline int rvid_decode_mjpeg_frame(const uint8_t* data, size_t size,
                                            uint32_t* pixels,
                                            size_t pixel_capacity,
                                            int max_width, int max_height) {
-    return rjpeg_decode(data, size, pixels, pixel_capacity,
-                        max_width, max_height);
+    return rvid_decode_mjpeg_frame_cancellable(
+        data, size, pixels, pixel_capacity, max_width, max_height, 0, 0);
 }
 
-static inline int rvid_decode_raw_frame(const uint8_t* data, size_t size,
-                                         uint32_t* pixels,
-                                         size_t pixel_capacity,
-                                         int width, int height,
-                                         int bits_per_pixel, int is_bgr) {
+static inline int rvid_decode_raw_frame_cancellable(
+    const uint8_t* data, size_t size, uint32_t* pixels,
+    size_t pixel_capacity, int width, int height, int bits_per_pixel,
+    int is_bgr, RJpegCancellationFunction cancellation,
+    void* cancellation_context) {
     if (!data || !pixels || width <= 0 || height <= 0 ||
         (is_bgr != 0 && is_bgr != 1) ||
         (bits_per_pixel != 16 && bits_per_pixel != 24 &&
@@ -172,6 +182,8 @@ static inline int rvid_decode_raw_frame(const uint8_t* data, size_t size,
 
     /* ボトムアップBMP形式 */
     for (int y = 0; y < height; y++) {
+        if (cancellation != NULL && cancellation(cancellation_context) != 0)
+            return RVID_CANCELLED;
         const uint8_t* src =
             data + (size_t)(unsigned)(height - 1 - y) * stride;
         uint32_t* dst = pixels + (size_t)(unsigned)y * (size_t)(unsigned)width;
@@ -212,6 +224,16 @@ static inline int rvid_decode_raw_frame(const uint8_t* data, size_t size,
     }
 
     return RVID_OK;
+}
+
+static inline int rvid_decode_raw_frame(const uint8_t* data, size_t size,
+                                         uint32_t* pixels,
+                                         size_t pixel_capacity,
+                                         int width, int height,
+                                         int bits_per_pixel, int is_bgr) {
+    return rvid_decode_raw_frame_cancellable(
+        data, size, pixels, pixel_capacity, width, height, bits_per_pixel,
+        is_bgr, 0, 0);
 }
 
 /*
@@ -367,52 +389,66 @@ static inline int rvid_get_audio_info(RVidPlayer* player, RVidAudioInfo* info) {
 /*
  * 1フレームデコード
  */
-static inline int rvid_decode_frame(RVidPlayer* player, uint32_t frame_num,
-                                     uint32_t* pixels, size_t pixel_capacity,
-                                     int max_width, int max_height) {
+static inline int rvid_decode_frame_cancellable(
+    RVidPlayer* player, uint32_t frame_num, uint32_t* pixels,
+    size_t pixel_capacity, int max_width, int max_height,
+    RJpegCancellationFunction cancellation, void* cancellation_context) {
     if (!player || !pixels || max_width <= 0 || max_height <= 0)
         return RVID_ERROR;
 
     RAviFrame frame;
-    int ret = ravi_get_frame_by_index(&player->avi, frame_num, &frame);
+    int ret = ravi_get_frame_by_index_cancellable(
+        &player->avi, frame_num, &frame, cancellation, cancellation_context);
     if (ret != RAVI_OK) {
+        if (ret == RAVI_CANCELLED) return RVID_CANCELLED;
         return (ret == RAVI_END_OF_FILE) ? RVID_END_OF_FILE : RVID_ERROR;
     }
 
     /* コーデックに応じてデコード */
     if (player->video_info.codec == RVID_CODEC_MJPEG) {
-        ret = rvid_decode_mjpeg_frame(frame.data, frame.size, pixels,
-                                       pixel_capacity,
-                                       max_width, max_height);
+        ret = rvid_decode_mjpeg_frame_cancellable(
+            frame.data, frame.size, pixels, pixel_capacity, max_width,
+            max_height, cancellation, cancellation_context);
     } else if (player->video_info.codec == RVID_CODEC_RAW_BGR ||
                player->video_info.codec == RVID_CODEC_RAW_RGB) {
         RAviStream* vs = &player->avi.streams[player->avi.video_stream];
         if (vs->video.width <= 0 || vs->video.height <= 0 ||
             vs->video.width > max_width || vs->video.height > max_height)
             return RVID_ERROR;
-        ret = rvid_decode_raw_frame(frame.data, frame.size, pixels,
-                                     pixel_capacity,
-                                     vs->video.width, vs->video.height,
-                                     vs->video.bit_depth,
-                                     player->video_info.codec == RVID_CODEC_RAW_BGR);
+        ret = rvid_decode_raw_frame_cancellable(
+            frame.data, frame.size, pixels, pixel_capacity,
+            vs->video.width, vs->video.height, vs->video.bit_depth,
+            player->video_info.codec == RVID_CODEC_RAW_BGR, cancellation,
+            cancellation_context);
     } else {
         return RVID_UNSUPPORTED;
     }
 
+    if (ret == RJPEG_CANCELLED || ret == RVID_CANCELLED)
+        return RVID_CANCELLED;
     return (ret == 0) ? RVID_OK : RVID_ERROR;
+}
+
+static inline int rvid_decode_frame(RVidPlayer* player, uint32_t frame_num,
+                                     uint32_t* pixels, size_t pixel_capacity,
+                                     int max_width, int max_height) {
+    return rvid_decode_frame_cancellable(
+        player, frame_num, pixels, pixel_capacity, max_width, max_height,
+        NULL, NULL);
 }
 
 /*
  * 次のフレームをデコードして進める
  */
-static inline int rvid_next_frame(RVidPlayer* player, uint32_t* pixels,
-                                   size_t pixel_capacity,
-                                   int max_width, int max_height) {
+static inline int rvid_next_frame_cancellable(
+    RVidPlayer* player, uint32_t* pixels, size_t pixel_capacity,
+    int max_width, int max_height, RJpegCancellationFunction cancellation,
+    void* cancellation_context) {
     if (!player) return RVID_ERROR;
 
-    int ret = rvid_decode_frame(player, player->current_frame, pixels,
-                                 pixel_capacity,
-                                 max_width, max_height);
+    int ret = rvid_decode_frame_cancellable(
+        player, player->current_frame, pixels, pixel_capacity, max_width,
+        max_height, cancellation, cancellation_context);
     if (ret == RVID_OK) {
         if (player->current_frame != UINT32_MAX)
             player->current_frame++;
@@ -437,6 +473,13 @@ static inline int rvid_next_frame(RVidPlayer* player, uint32_t* pixels,
         }
     }
     return ret;
+}
+
+static inline int rvid_next_frame(RVidPlayer* player, uint32_t* pixels,
+                                   size_t pixel_capacity,
+                                   int max_width, int max_height) {
+    return rvid_next_frame_cancellable(player, pixels, pixel_capacity,
+                                       max_width, max_height, NULL, NULL);
 }
 
 /*

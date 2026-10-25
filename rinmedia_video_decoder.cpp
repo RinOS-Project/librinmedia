@@ -167,7 +167,9 @@ bool VideoDecoder::openDescriptor(int descriptor) {
 bool VideoDecoder::decodeNextFrame(uint32_t max_width, uint32_t max_height,
                                    uint32_t max_frame_bytes,
                                    RinVideoFrameInfoV1* info_out,
-                                   const uint8_t** output_out) {
+                                   const uint8_t** output_out,
+                                   RJpegCancellationFunction cancellation,
+                                   void* cancellation_context) {
     RinVideoFrameInfoV1 info = {};
     const uint32_t frame_index = player_.current_frame;
     const uint64_t expected_bytes = (uint64_t)info_.row_stride_bytes *
@@ -186,9 +188,10 @@ bool VideoDecoder::decodeNextFrame(uint32_t max_width, uint32_t max_height,
     info.row_stride_bytes = info_.row_stride_bytes;
     info.frame_index = frame_index;
 
-    const int decoded = rvid_next_frame(
+    const int decoded = rvid_next_frame_cancellable(
         &player_, frame_pixels_, frame_capacity_pixels_,
-        (int)info_.width, (int)info_.height);
+        (int)info_.width, (int)info_.height, cancellation,
+        cancellation_context);
     if (decoded == RVID_END_OF_FILE) {
         info.flags = RIN_VIDEO_FRAME_FLAG_END_OF_STREAM;
         info.timestamp_ns = info_.duration_ns;
